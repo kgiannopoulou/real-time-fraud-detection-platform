@@ -115,6 +115,21 @@ services:
       - ./ml/artifacts:/app/ml/artifacts:ro   # fallback model
     restart: unless-stopped
 
+  # Real-time fraud monitor (Streamlit).
+  dashboard:
+    build:
+      context: .
+      dockerfile: dashboard/Dockerfile
+    image: fraud-platform/dashboard:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
+    ports:
+      - "8501:8501"
+    restart: unless-stopped
+
   # Experiment tracking + model registry. SQLite metadata and artefacts live
   # in a named volume; artefacts are proxied through the server (--serve-artifacts)
   # so clients only need the tracking URI.

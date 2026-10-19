@@ -113,6 +113,20 @@ Other endpoints: `GET /predictions`, `GET /predictions/{id}`, `GET /alerts`,
 `PATCH /alerts/{id}` (analyst feedback: confirmed / dismissed),
 `GET /stats/summary`, `GET /health`.
 
+### Fraud dashboard
+
+```bash
+docker compose up -d --build dashboard              # http://localhost:8501
+```
+
+![Real-time fraud monitor](docs/images/dashboard.png)
+
+KPIs, transactions and fraud per minute, the score distribution, fraud by
+country / merchant category / hour, a live transaction table and a detail
+panel with the model's reasons for each flagged transaction. An **Alerts** tab
+lets an analyst confirm or dismiss alerts — the feedback that becomes labels
+for retraining. The page refreshes itself every 5 seconds (`st.fragment`).
+
 ### Kafka ingestion
 
 ```bash
@@ -187,7 +201,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 8 — Real-time ML scoring
 - [x] Phase 9 — Explainability
 - [x] Phase 10 — PostgreSQL serving store
-- [ ] Phase 11 — Fraud dashboard
+- [x] Phase 11 — Fraud dashboard
 - [ ] Phase 12 — Airflow retraining
 - [ ] Phase 13 — Data quality and dead-letter queue
 - [ ] Phase 14 — Monitoring (Prometheus/Grafana)
