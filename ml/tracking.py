@@ -90,6 +90,13 @@ class Tracker:
         fig.savefig(out / "pr_curve.png", dpi=110)
         plt.close(fig)
 
+        from ml.explain import plot_importance
+        from ml.feature_pipeline import FEATURES
+
+        sample = test.sample(min(len(test), 20_000), random_state=0)
+        plot_importance(run["booster"], sample, FEATURES, out / "shap_importance.png")
+        mlflow.log_artifact(str(out / "shap_importance.png"), artifact_path="explainability")
+
         m: Metrics = run["results"]["xgboost"]["metrics"]
         (out / "confusion_matrix.txt").write_text(m.confusion_matrix_text())
         (out / "metrics.json").write_text(json.dumps(m.as_dict(), indent=2))

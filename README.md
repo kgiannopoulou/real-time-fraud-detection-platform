@@ -71,7 +71,8 @@ python producer/consumer.py --topic fraud_predictions -v
 {"transaction_id": "tx_5456d1f41635", "user_id": "user_11497", "amount_eur": 642.83,
  "merchant_category": "crypto", "country": "GR", "event_time": "2026-10-19T20:11:04.804Z",
  "fraud_probability": 0.027257, "prediction": "LEGIT", "model_version": "4",
- "scored_at": "2026-10-19T20:11:06.517Z", "features": {"tx_count_2m": 0.0, "amount_ratio": null, ...}}
+ "risk_factors": ["new device (device_96084ae47b)", "first transaction from BR", "very small amount (EUR 3.24)"],
+ "scored_at": "2026-10-19T20:11:06.517Z", "features": {"tx_count_2m": 0.0, "amount_ratio": 0.008, ...}}
 ```
 
 The driver resolves the registry version with the `champion` alias and ships
@@ -79,7 +80,8 @@ the raw artefacts to executors as a **broadcast variable**; executors score
 with `mapInPandas`, caching the deserialized booster per version. Every
 micro-batch the driver re-checks the registry (at most once a minute), so
 promoting a new version in MLflow hot-swaps the model without restarting the
-stream. Lake writes go to a batch-specific directory overwritten on replay,
+stream. Each prediction is explained with TreeSHAP-based **risk factors**
+([docs/explainability.md](docs/explainability.md)). Lake writes go to a batch-specific directory overwritten on replay,
 which keeps them idempotent under Spark's at-least-once `foreachBatch`.
 
 ### Kafka ingestion
@@ -154,7 +156,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 6 — Behavioural streaming features
 - [x] Phase 7 — Event time and watermarking
 - [x] Phase 8 — Real-time ML scoring
-- [ ] Phase 9 — Explainability
+- [x] Phase 9 — Explainability
 - [ ] Phase 10 — PostgreSQL serving store
 - [ ] Phase 11 — Fraud dashboard
 - [ ] Phase 12 — Airflow retraining

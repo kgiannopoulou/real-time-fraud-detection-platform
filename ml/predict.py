@@ -60,6 +60,17 @@ class FraudModel:
             return np.empty(0)
         return self.booster.predict(self._matrix(rows))
 
+    def explain(self, rows: pd.DataFrame) -> tuple[list[list[str]], list[dict[str, float]]]:
+        """Readable risk factors and the top SHAP contributions of each row."""
+        from ml.explain import risk_factors, shap_values, top_contributions
+
+        if rows.empty:
+            return [], []
+        contributions = shap_values(self.booster, rows, self.features)
+        return risk_factors(contributions, rows, self.features), top_contributions(
+            contributions, self.features
+        )
+
     def predict(self, rows: pd.DataFrame) -> pd.DataFrame:
         proba = self.predict_proba(rows)
         return pd.DataFrame(

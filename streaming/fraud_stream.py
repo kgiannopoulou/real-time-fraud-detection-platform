@@ -173,6 +173,7 @@ PREDICTION_FIELDS = [
     "fraud_probability",
     "prediction",
     "model_version",
+    "risk_factors",
     "scored_at",
 ]
 

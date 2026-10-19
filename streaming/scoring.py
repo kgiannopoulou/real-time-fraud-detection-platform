@@ -5,12 +5,15 @@
   artefacts (booster JSON + feature spec) to executors as a **broadcast
   variable**. It re-checks the registry periodically, so promoting a new
   version in MLflow hot-swaps the model without restarting the stream.
+* Every score comes with its **explanation**: TreeSHAP contributions turned
+  into readable risk factors (``ml/explain.py``).
 * **Executors** deserialize the broadcast once per Python worker (cached by
   version) and score partitions with ``mapInPandas``.
 """
 
 from __future__ import annotations
 
+import json
 import os
 import time
 from dataclasses import dataclass
@@ -19,7 +22,14 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 from pyspark.sql import DataFrame, SparkSession
-from pyspark.sql.types import DoubleType, StringType, StructField, StructType, TimestampType
+from pyspark.sql.types import (
+    ArrayType,
+    DoubleType,
+    StringType,
+    StructField,
+    StructType,
+    TimestampType,
+)
 
 from ml.feature_pipeline import add_risk_features
 from ml.predict import ARTIFACT_DIR, MODEL_FILE, SPEC_FILE, FraudModel
@@ -31,6 +41,8 @@ SCORE_FIELDS = [
     StructField("model_version", StringType()),
     StructField("merchant_risk", DoubleType()),
     StructField("country_risk", DoubleType()),
+    StructField("risk_factors", ArrayType(StringType())),
+    StructField("shap_top", StringType()),  # JSON {feature: contribution}
     StructField("scored_at", TimestampType()),
 ]
 PREDICTION_SCHEMA = StructType([*FEATURES_SCHEMA.fields, *SCORE_FIELDS])
@@ -123,6 +135,9 @@ def score_frame(pdf: pd.DataFrame, model: FraudModel) -> pd.DataFrame:
     pdf["fraud_probability"] = preds["fraud_probability"].astype(float).round(6)
     pdf["prediction"] = preds["prediction"]
     pdf["model_version"] = model.version
+    factors, contributions = model.explain(pdf)
+    pdf["risk_factors"] = factors
+    pdf["shap_top"] = [json.dumps(c) for c in contributions]
     pdf["scored_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
     return pdf
 
