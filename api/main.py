@@ -23,7 +23,8 @@ from datetime import datetime, timedelta, timezone
 from typing import Literal
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Request
+from prometheus_client import Counter, Histogram, make_asgi_app
 from psycopg.rows import dict_row
 from psycopg.types.numeric import FloatLoader
 from psycopg_pool import ConnectionPool
@@ -31,15 +32,27 @@ from pydantic import BaseModel, Field
 
 from ml.feature_pipeline import add_risk_features
 from ml.predict import FraudModel, load_serving_model
+from ml.registry import champion_version
 from producer.transaction_generator import FX_TO_EUR, SUPPORTED_CURRENCIES
 from storage.postgres import dsn_from_env, ensure_schema, recent_user_transactions
 from streaming.features import KNOWN_TTL, UserState
 
 MODEL_REFRESH_SECONDS = float(os.getenv("MODEL_REFRESH_SECONDS", "60"))
 
+REQUESTS = Counter("fraud_api_requests_total", "HTTP requests", ["method", "route", "status"])
+REQUEST_LATENCY = Histogram(
+    "fraud_api_request_seconds",
+    "HTTP request latency",
+    ["route"],
+    buckets=(0.005, 0.01, 0.025, 0.05, 0.1, 0.25, 0.5, 1, 2.5),
+)
+API_PREDICTIONS = Counter("fraud_api_predictions_total", "Online predictions", ["prediction"])
+
 
 class ModelHolder:
-    """Current champion model, re-resolved from the registry at most once a minute."""
+    """Current champion model. At most once a minute the registry is asked which
+    version is champion (a cheap call); artefacts are downloaded only when it
+    changed."""
 
     def __init__(self, tracking_uri: str | None):
         self.tracking_uri = tracking_uri
@@ -49,13 +62,17 @@ class ModelHolder:
 
     def get(self) -> FraudModel:
         with self._lock:
-            if self._model is None or time.monotonic() - self._checked > MODEL_REFRESH_SECONDS:
+            if self._model is None:
+                self._model = load_serving_model(self.tracking_uri)
+                self._checked = time.monotonic()
+            elif self.tracking_uri and time.monotonic() - self._checked > MODEL_REFRESH_SECONDS:
                 self._checked = time.monotonic()
                 try:
-                    self._model = load_serving_model(self.tracking_uri)
+                    version, _ = champion_version(self.tracking_uri)
+                    if version != self._model.version:
+                        self._model = load_serving_model(self.tracking_uri)
                 except Exception:
-                    if self._model is None:
-                        raise
+                    pass  # registry unreachable: keep serving the current model
             return self._model
 
 
@@ -111,6 +128,18 @@ app = FastAPI(
     description="Online scoring and read access to the fraud platform's serving store.",
     lifespan=lifespan,
 )
+app.mount("/metrics", make_asgi_app())
+
+
+@app.middleware("http")
+async def record_metrics(request: Request, call_next):
+    started = time.perf_counter()
+    response = await call_next(request)
+    route = getattr(request.scope.get("route"), "path", "unmatched")
+    if not request.url.path.startswith("/metrics"):
+        REQUESTS.labels(request.method, route, str(response.status_code)).inc()
+        REQUEST_LATENCY.labels(route).observe(time.perf_counter() - started)
+    return response
 
 
 def _features_frame(tx: TransactionIn, history_rows: list[dict], model: FraudModel) -> pd.DataFrame:
@@ -150,6 +179,7 @@ def predict(tx: TransactionIn) -> PredictionOut:
     frame = _features_frame(tx, history, model)
     scored = model.predict(frame).iloc[0]
     factors, _ = model.explain(frame)
+    API_PREDICTIONS.labels(scored["prediction"]).inc()
     features = {
         name: (None if pd.isna(value) else float(value))
         for name, value in frame.iloc[0][model.features].items()

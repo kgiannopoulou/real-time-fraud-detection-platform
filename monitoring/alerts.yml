@@ -1,0 +1,44 @@
+groups:
+  - name: fraud-platform
+    rules:
+      - alert: StreamingLagHigh
+        expr: max(fraud_stream_kafka_offsets_behind_latest{query="scoring"}) > 5000
+        for: 2m
+        labels: {severity: warning}
+        annotations:
+          summary: "Scoring query is {{ $value }} offsets behind the transactions topic"
+
+      - alert: EndToEndLatencyHigh
+        expr: histogram_quantile(0.95, sum by (le) (rate(fraud_stream_e2e_latency_seconds_bucket[5m]))) > 10
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "p95 ingest-to-score latency is {{ $value | humanizeDuration }}"
+
+      - alert: ScoringStalled
+        expr: sum(rate(fraud_stream_scored_total[5m])) == 0 and sum(rate(kafka_topic_partition_current_offset{topic="transactions"}[5m])) > 0
+        for: 3m
+        labels: {severity: critical}
+        annotations:
+          summary: "Transactions are arriving but nothing is being scored"
+
+      - alert: DeadLetterRateHigh
+        expr: sum(rate(fraud_stream_dead_letters_total[5m])) / clamp_min(sum(rate(fraud_stream_scored_total[5m])), 1e-9) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "More than 5% of records are being dead-lettered"
+
+      - alert: FeatureDrift
+        expr: max by (feature) (fraud_feature_psi) > 0.25
+        for: 5m
+        labels: {severity: warning}
+        annotations:
+          summary: "Feature {{ $labels.feature }} drifted from training (PSI {{ $value | printf \"%.2f\" }})"
+
+      - alert: FraudRateAnomalous
+        expr: fraud_model_fraud_rate > 5 * fraud_model_training_fraud_rate
+        for: 10m
+        labels: {severity: warning}
+        annotations:
+          summary: "Predicted fraud rate is more than 5x the training fraud rate"

@@ -30,6 +30,7 @@ from pyspark.sql import functions as F
 from pyspark.sql.streaming.state import GroupStateTimeout
 
 from ml.feature_pipeline import FEATURES
+from ml.monitoring import DRIFT_FEATURES
 from producer.transaction_generator import FX_TO_EUR
 from storage.postgres import (
     ensure_schema,
@@ -38,6 +39,7 @@ from storage.postgres import (
     write_dead_letters,
     write_window_stats,
 )
+from streaming import metrics
 from streaming.schemas import TRANSACTION_SCHEMA, event_time, parse_value, validation_errors
 from streaming.scoring import ModelBroadcaster, latency_summary, model_settings, score
 from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compute_user_features
@@ -47,6 +49,7 @@ from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compu
 class StreamConfig:
     bootstrap: str = field(default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"))
     transactions_topic: str = field(default_factory=lambda: os.getenv("TRANSACTIONS_TOPIC", "transactions"))
+    metrics_port: int = field(default_factory=lambda: int(os.getenv("METRICS_PORT", "9108")))
     dead_letter_topic: str = field(
         default_factory=lambda: os.getenv("DEAD_LETTER_TOPIC", "dead_letter_transactions")
     )
@@ -83,6 +86,15 @@ def build_spark(app_name: str = "fraud-stream") -> SparkSession:
         # The default of 200 shuffle partitions means 200 state stores per
         # stateful operator; a handful matches the topic's 6 partitions.
         .config("spark.sql.shuffle.partitions", os.getenv("SHUFFLE_PARTITIONS", "6"))
+        # JVM / executor metrics in Prometheus format on the Spark UI port.
+        .config("spark.ui.prometheus.enabled", "true")
+        .config("spark.metrics.namespace", "fraud_stream")
+        .config(
+            "spark.metrics.conf.*.sink.prometheusServlet.class",
+            "org.apache.spark.metrics.sink.PrometheusServlet",
+        )
+        .config("spark.metrics.conf.*.sink.prometheusServlet.path", "/metrics/prometheus")
+        .config("spark.metrics.conf.driver.source.jvm.class", "org.apache.spark.metrics.source.JvmSource")
         .config(
             "spark.sql.streaming.stateStore.providerClass",
             "org.apache.spark.sql.execution.streaming.state.RocksDBStateStoreProvider",
@@ -250,7 +262,10 @@ def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
             # Overwriting a batch-specific directory makes the lake write
             # idempotent when Spark replays a batch after a failure.
             scored.write.mode("overwrite").parquet(f"{cfg.lake_path}/predictions/batch_id={batch_id:08d}")
-            summary = scored.select("kafka_timestamp", "scored_at", "prediction").toPandas()
+            summary = scored.select(
+                "kafka_timestamp", "scored_at", "prediction", "fraud_probability", "score_ms", *DRIFT_FEATURES
+            ).toPandas()
+            metrics.observe_scored(summary, broadcaster.spec)
             frauds = int((summary["prediction"] == "FRAUD").sum())
             latency = latency_summary(summary)
             print(
@@ -341,7 +356,9 @@ def publish_dead_letters(records: DataFrame, cfg: StreamConfig) -> None:
         .option("topic", cfg.dead_letter_topic)
         .save()
     )
-    write_dead_letters([row.asDict() for row in records.collect()], cfg.postgres_dsn)
+    rows = [row.asDict() for row in records.collect()]
+    write_dead_letters(rows, cfg.postgres_dsn)
+    metrics.observe_dead_letters([r["reasons"] for r in rows])
 
 
 def start_dead_letter_sink(records: DataFrame, cfg: StreamConfig):
@@ -370,9 +387,14 @@ def main() -> None:
     on_time, too_late = split_by_lateness(transactions, cfg)
 
     start_lake_sink(transactions, cfg)
-    broadcaster = ModelBroadcaster(
-        spark, on_change=lambda spec: record_model(spec, cfg.postgres_dsn), **model_settings()
-    )
+    metrics.start_server(cfg.metrics_port)
+    spark.streams.addListener(metrics.ProgressListener())
+
+    def on_model_change(spec: dict) -> None:
+        metrics.observe_model(spec)
+        record_model(spec, cfg.postgres_dsn)
+
+    broadcaster = ModelBroadcaster(spark, on_change=on_model_change, **model_settings())
     start_scoring(user_features(on_time, cfg), cfg, broadcaster)
     start_window_stats(window_stats(on_time, cfg), cfg)
     start_dead_letter_sink(dead_letters(parsed, too_late, cfg), cfg)

@@ -107,6 +107,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--very-late-rate", type=float, default=0.0, help="share delayed 3-5 min (beyond allowed lateness)"
     )
+    parser.add_argument("--amount-drift", type=float, default=1.0, help="multiply amounts (drift demo)")
+    parser.add_argument("--metrics-port", type=int, default=0, help="expose Prometheus metrics (0 = off)")
     parser.add_argument("--duplicate-rate", type=float, default=0.0, help="share of events sent twice")
     parser.add_argument("--invalid-rate", type=float, default=0.0, help="share of events corrupted")
     args = parser.parse_args(argv)
@@ -120,7 +122,16 @@ def main(argv: list[str] | None = None) -> None:
             invalid_rate=args.invalid_rate,
         )
     )
-    gen = TransactionGenerator(seed=args.seed, config=GeneratorConfig(n_users=users_for_rate(args.rate)))
+    gen = TransactionGenerator(
+        seed=args.seed,
+        config=GeneratorConfig(n_users=users_for_rate(args.rate), amount_drift=args.amount_drift),
+    )
+    produced = None
+    if args.metrics_port:
+        from prometheus_client import Counter, start_http_server
+
+        start_http_server(args.metrics_port)
+        produced = Counter("fraud_producer_events_total", "Events published", ["kind"])
     producer = TransactionProducer(args.bootstrap, args.topic)
     stop = False
 
@@ -140,6 +151,8 @@ def main(argv: list[str] | None = None) -> None:
             for event in chaos.process(strip_labels(tx), now):
                 producer.send(event)
                 sent += 1
+                if produced is not None:
+                    produced.labels("raw" if isinstance(event, str) else "json").inc()
                 if not args.quiet:
                     tx_id = event.get("transaction_id", "?") if isinstance(event, dict) else "<malformed>"
                     print(f"produced transaction {tx_id}")

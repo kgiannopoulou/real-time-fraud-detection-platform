@@ -45,6 +45,7 @@ SCORE_FIELDS = [
     StructField("risk_factors", ArrayType(StringType())),
     StructField("shap_top", StringType()),  # JSON {feature: contribution}
     StructField("scored_at", TimestampType()),
+    StructField("score_ms", DoubleType()),  # inference + explanation time per row
 ]
 PREDICTION_SCHEMA = StructType([*FEATURES_SCHEMA.fields, *SCORE_FIELDS])
 PREDICTION_COLUMNS = [f.name for f in PREDICTION_SCHEMA.fields]
@@ -82,6 +83,7 @@ class ModelBroadcaster:
         self.refresh_seconds = refresh_seconds
         self.fallback_dir = Path(fallback_dir)
         self.version: str | None = None
+        self.spec: dict = {}
         self.broadcast = None
         self._checked_at = 0.0
         self.refresh(force=True)
@@ -116,11 +118,12 @@ class ModelBroadcaster:
         self.broadcast = self.spark.sparkContext.broadcast(payload)
         print(f"[scoring] serving model version {payload.version} (was {self.version})", flush=True)
         self.version = payload.version
+        self.spec = json.loads(payload.spec_json)
         if old is not None:
             old.unpersist()
         if self.on_change is not None:
             try:
-                self.on_change(json.loads(payload.spec_json))
+                self.on_change(self.spec)
             except Exception as exc:  # metadata is best-effort; never stop scoring
                 print(f"[scoring] could not record model metadata: {exc!s:.120}", flush=True)
 
@@ -138,6 +141,7 @@ def _model(payload: ModelPayload) -> FraudModel:
 
 def score_frame(pdf: pd.DataFrame, model: FraudModel) -> pd.DataFrame:
     """Add risk encodings, probability and decision to a features frame."""
+    started = time.perf_counter()
     pdf = add_risk_features(pdf.copy(), model.risk)
     preds = model.predict(pdf)
     pdf["fraud_probability"] = preds["fraud_probability"].astype(float).round(6)
@@ -147,6 +151,7 @@ def score_frame(pdf: pd.DataFrame, model: FraudModel) -> pd.DataFrame:
     pdf["risk_factors"] = factors
     pdf["shap_top"] = [json.dumps(c) for c in contributions]
     pdf["scored_at"] = pd.Timestamp.now(tz="UTC").tz_localize(None)
+    pdf["score_ms"] = (time.perf_counter() - started) * 1000 / max(len(pdf), 1)
     return pdf
 
 

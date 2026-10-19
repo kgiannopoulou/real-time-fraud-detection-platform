@@ -151,6 +151,22 @@ reasons; the stream keeps running. The producer can inject all of them:
 `--invalid-rate 0.01 --duplicate-rate 0.01`. See
 [docs/data-quality.md](docs/data-quality.md).
 
+### Monitoring (Prometheus + Grafana)
+
+```bash
+docker compose up -d prometheus grafana kafka-exporter   # Grafana http://localhost:3001, Prometheus :9090
+python producer/producer.py --rate 30 --metrics-port 8001 --amount-drift 2.0   # drift drill
+```
+
+Infrastructure: throughput, Kafka lag, end-to-end and inference latency,
+batch duration, state size, watermark drops, dead letters, CPU/memory. ML:
+score distribution, fraud rate vs training, serving version and **feature
+drift (PSI)** against baselines stored with the model. Six alert rules
+(lag, latency, stalled scoring, DLQ rate, drift, anomalous fraud rate). See
+[docs/monitoring.md](docs/monitoring.md).
+
+![Model and drift dashboard](docs/images/grafana_ml.png)
+
 ### Kafka ingestion
 
 ```bash
@@ -228,7 +244,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 11 — Fraud dashboard
 - [x] Phase 12 — Airflow retraining
 - [x] Phase 13 — Data quality and dead-letter queue
-- [ ] Phase 14 — Monitoring (Prometheus/Grafana)
+- [x] Phase 14 — Monitoring (Prometheus/Grafana)
 - [ ] Phase 15 — Full Docker Compose stack
 - [ ] Phase 16 — Tests
 - [ ] Phase 17 — CI/CD

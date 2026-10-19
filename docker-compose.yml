@@ -88,7 +88,8 @@ services:
       LAKE_PATH: /data/lake
       CHECKPOINT_ROOT: /data/checkpoints
     ports:
-      - "4040:4040"   # Spark UI
+      - "4040:4040"   # Spark UI (+ JVM metrics at /metrics/prometheus)
+      - "9108:9108"   # application metrics
     volumes:
       - ./data/lake:/data/lake
       - spark-checkpoints:/data/checkpoints
@@ -166,6 +167,48 @@ services:
       retries: 20
     restart: unless-stopped
 
+  # Monitoring: Prometheus (metrics + alert rules) and Grafana (dashboards).
+  prometheus:
+    image: prom/prometheus:v3.6.0
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.retention.time=7d
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./monitoring/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./monitoring/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:12.2.0
+    depends_on: [prometheus]
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: admin
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+      GF_DASHBOARDS_DEFAULT_HOME_DASHBOARD_PATH: /var/lib/grafana/dashboards/platform.json
+    ports:
+      - "3001:3000"
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning:ro
+      - ./monitoring/grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - grafana-data:/var/lib/grafana
+    restart: unless-stopped
+
+  # Topic offsets / partition metrics for Prometheus.
+  kafka-exporter:
+    image: danielqsj/kafka-exporter:v1.9.0
+    command: ["--kafka.server=kafka:9092"]
+    depends_on:
+      kafka:
+        condition: service_healthy
+    restart: unless-stopped
+
   # Experiment tracking + model registry. SQLite metadata and artefacts live
   # in a named volume; artefacts are proxied through the server (--serve-artifacts)
   # so clients only need the tracking URI.
@@ -193,3 +236,5 @@ volumes:
   postgres-data:
   spark-checkpoints:
   mlflow-data:
+  prometheus-data:
+  grafana-data:

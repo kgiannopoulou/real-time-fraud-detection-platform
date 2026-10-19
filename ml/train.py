@@ -36,6 +36,7 @@ from sklearn.preprocessing import StandardScaler
 from ml.dataset import load_synthetic
 from ml.evaluate import Metrics, best_f1_threshold, evaluate, threshold_table
 from ml.feature_pipeline import FEATURES, TARGET, RiskTables, build_features, time_split
+from ml.monitoring import build_baselines
 from ml.predict import ARTIFACT_DIR, save_artifacts
 
 ALL_FAMILIES = ("logistic_regression", "random_forest", "xgboost", "lightgbm")
@@ -191,6 +192,9 @@ def build_spec(run: dict, version: str = "local") -> dict:
         "params": run["params"],
         "metrics": metrics.as_dict(),
         "train_rows": run["train_rows"],
+        # Reference distributions for drift monitoring (PSI) in production.
+        "baseline": build_baselines(run["prepared"][1], FEATURES),
+        "training_fraud_rate": float(run["prepared"][1][TARGET].mean()),
     }
 
 

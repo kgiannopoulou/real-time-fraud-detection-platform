@@ -6,3 +6,4 @@ pyarrow==21.0.0
 xgboost==3.2.0
 mlflow-skinny==3.17.1
 psycopg[binary]==3.3.6
+prometheus-client==0.26.0
