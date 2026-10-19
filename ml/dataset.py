@@ -19,6 +19,7 @@ from __future__ import annotations
 
 import argparse
 import time
+from datetime import datetime
 from pathlib import Path
 
 import pandas as pd
@@ -33,10 +34,16 @@ OPENML_CREDITCARD_ID = 1597
 
 
 def build_synthetic(
-    days: float = 3.0, n_users: int = 600, seed: int = 42, amount_drift: float = 1.0
+    days: float = 3.0,
+    n_users: int = 600,
+    seed: int = 42,
+    amount_drift: float = 1.0,
+    start: datetime | None = None,
+    event_seed: int | None = None,
 ) -> pd.DataFrame:
     cfg = GeneratorConfig(n_users=n_users, amount_drift=amount_drift)
-    rows = TransactionGenerator(seed=seed, config=cfg).generate_history(days=days)
+    gen = TransactionGenerator(seed=seed, config=cfg)
+    rows = gen.generate_history(days=days, start=start, event_seed=event_seed)
     df = pd.DataFrame(rows)
     df["timestamp"] = pd.to_datetime(df["timestamp"], utc=True, format="ISO8601")
     return df

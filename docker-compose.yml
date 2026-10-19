@@ -53,7 +53,7 @@ services:
     environment:
       POSTGRES_DB: fraud
       POSTGRES_USER: fraud
-      POSTGRES_PASSWORD: fraud
+      POSTGRES_PASSWORD: fraud_local_pw
     ports:
       - "5436:5432"
     volumes:
@@ -80,7 +80,7 @@ services:
         condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
-      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
+      POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODEL_ALIAS: champion
       MODEL_REFRESH_SECONDS: 60
@@ -107,7 +107,7 @@ services:
       mlflow:
         condition: service_healthy
     environment:
-      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
+      POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
       MLFLOW_TRACKING_URI: http://mlflow:5000
     ports:
       - "8000:8000"
@@ -125,9 +125,45 @@ services:
       postgres:
         condition: service_healthy
     environment:
-      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
+      POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
     ports:
       - "8501:8501"
+    restart: unless-stopped
+
+  # Batch orchestration: weekly retraining DAG (scheduler + webserver).
+  airflow:
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    image: fraud-platform/airflow:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      AIRFLOW_ADMIN_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
+      AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fraud:fraud_local_pw@postgres:5432/airflow
+      AIRFLOW__CORE__EXECUTOR: LocalExecutor
+      AIRFLOW__CORE__LOAD_EXAMPLES: "false"
+      AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: "false"
+      AIRFLOW__WEBSERVER__WORKERS: 2
+      AIRFLOW__WEBSERVER__EXPOSE_CONFIG: "false"
+      # Shared by all webserver workers (sessions + CSRF); local-only value.
+      AIRFLOW__WEBSERVER__SECRET_KEY: local-dev-airflow-secret
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
+      MLFLOW_DISABLE_AGENT_HINT: 1
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./airflow/dags:/opt/airflow/dags:ro
+      - ./data:/opt/fraud/data
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
     restart: unless-stopped
 
   # Experiment tracking + model registry. SQLite metadata and artefacts live

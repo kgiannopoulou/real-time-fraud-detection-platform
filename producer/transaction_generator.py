@@ -370,8 +370,16 @@ class TransactionGenerator:
                 assert item.payload is not None
                 yield item.payload
 
-    def generate_history(self, days: float = 3.0, start: datetime | None = None) -> list[dict]:
-        """Labelled historical transactions covering ``days`` of simulated time."""
+    def generate_history(
+        self, days: float = 3.0, start: datetime | None = None, event_seed: int | None = None
+    ) -> list[dict]:
+        """Labelled historical transactions covering ``days`` of simulated time.
+
+        ``event_seed`` draws a different history for the same population (e.g.
+        the next week of a label feed); by default the constructor seed is used.
+        """
+        if event_seed is not None:
+            self.rng = random.Random(event_seed)
         start = start or datetime(2026, 9, 1, tzinfo=timezone.utc)
         return list(self.simulate(start, start + timedelta(days=days)))
 

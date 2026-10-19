@@ -127,6 +127,20 @@ panel with the model's reasons for each flagged transaction. An **Alerts** tab
 lets an analyst confirm or dismiss alerts — the feedback that becomes labels
 for retraining. The page refreshes itself every 5 seconds (`st.fragment`).
 
+### Automated retraining (Airflow)
+
+```bash
+docker compose up -d --build airflow                 # http://localhost:8080  (admin / admin)
+docker compose exec airflow airflow dags trigger retrain_fraud_model
+```
+
+`retrain_fraud_model` runs weekly: validate data -> extract -> features ->
+train (registered in MLflow) -> evaluate candidate **and** champion on the same
+newest data -> promote only if the candidate wins by a margin. Promotion moves
+the MLflow `champion` alias, which the stream and API hot-swap. Airflow
+orchestrates batch work only; it never sits in the streaming path. Details:
+[docs/retraining.md](docs/retraining.md).
+
 ### Kafka ingestion
 
 ```bash
@@ -202,7 +216,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 9 — Explainability
 - [x] Phase 10 — PostgreSQL serving store
 - [x] Phase 11 — Fraud dashboard
-- [ ] Phase 12 — Airflow retraining
+- [x] Phase 12 — Airflow retraining
 - [ ] Phase 13 — Data quality and dead-letter queue
 - [ ] Phase 14 — Monitoring (Prometheus/Grafana)
 - [ ] Phase 15 — Full Docker Compose stack

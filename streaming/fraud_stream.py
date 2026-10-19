@@ -40,7 +40,9 @@ class StreamConfig:
     transactions_topic: str = field(default_factory=lambda: os.getenv("TRANSACTIONS_TOPIC", "transactions"))
     alerts_topic: str = field(default_factory=lambda: os.getenv("FRAUD_ALERTS_TOPIC", "fraud_alerts"))
     postgres_dsn: str = field(
-        default_factory=lambda: os.getenv("POSTGRES_DSN", "postgresql://fraud:fraud@postgres:5432/fraud")
+        default_factory=lambda: os.getenv(
+            "POSTGRES_DSN", "postgresql://fraud:fraud_local_pw@postgres:5432/fraud"
+        )
     )
     predictions_topic: str = field(
         default_factory=lambda: os.getenv("FRAUD_PREDICTIONS_TOPIC", "fraud_predictions")

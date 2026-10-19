@@ -15,7 +15,7 @@ from datetime import datetime, timezone
 
 import psycopg
 
-DEFAULT_DSN = "postgresql://fraud:fraud@localhost:5436/fraud"
+DEFAULT_DSN = "postgresql://fraud:fraud_local_pw@localhost:5436/fraud"
 
 ALERT_CRITICAL_PROBABILITY = 0.9
 ALERT_CRITICAL_AMOUNT_EUR = 1_000.0
