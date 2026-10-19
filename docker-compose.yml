@@ -1,0 +1,5 @@
+# Local platform. Services are added phase by phase (Kafka in Phase 4,
+# Spark in Phase 5, PostgreSQL in Phase 10, ...). See README "Roadmap".
+name: fraud-platform
+
+services: {}

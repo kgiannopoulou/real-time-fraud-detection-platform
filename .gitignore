@@ -1,0 +1,42 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+*.egg-info/
+
+# Environment
+.env
+
+# Generated data (regenerate with `python -m ml.dataset`)
+data/raw/*
+data/processed/*
+data/lake/*
+!data/**/.gitkeep
+
+# Local runtime state
+mlruns/
+mlartifacts/
+checkpoints/
+*.log
+
+# Trained model artifacts are produced by `python -m ml.train`
+ml/artifacts/*
+!ml/artifacts/.gitkeep
+
+# Terraform
+infrastructure/.terraform/
+infrastructure/*.tfstate
+infrastructure/*.tfstate.*
+infrastructure/*.tfplan
+infrastructure/.terraform.lock.hcl
+
+# OS / editors
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/

@@ -1,0 +1,4 @@
+# Runtime dependencies grow phase by phase; pinned for reproducibility.
+numpy==2.5.4
+pandas==3.0.6
+pyarrow==25.0.1

@@ -1,0 +1,4 @@
+# Prometheus scrape configuration — scrape targets are added in Phase 14.
+global:
+  scrape_interval: 5s
+scrape_configs: []
