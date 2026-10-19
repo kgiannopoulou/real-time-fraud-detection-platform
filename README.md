@@ -70,6 +70,21 @@ stay ordered) and `fraud_predictions`. The event contract is
 `schema_version` header. The producer uses `acks=all` with idempotence, so
 broker retries never create duplicates.
 
+### Spark Structured Streaming
+
+```bash
+docker compose up -d --build spark                   # Spark UI: http://localhost:4040
+python producer/producer.py --rate 30 --quiet
+docker compose logs -f spark                         # running per-category statistics
+```
+
+The job (`streaming/fraud_stream.py`) deserializes each Kafka record against an
+**explicit schema** (`streaming/schemas.py`), attaches the list of violated
+validation rules, drops invalid records, normalises amounts to EUR and appends
+every valid transaction to the Parquet data lake (`data/lake/transactions`,
+partitioned by event date). State lives in RocksDB-backed state stores with
+checkpoints, so the job resumes exactly where it stopped after a restart.
+
 See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
 [docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
@@ -94,7 +109,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 2 — Baseline fraud model
 - [x] Phase 3 — MLflow tracking and registry
 - [x] Phase 4 — Kafka ingestion
-- [ ] Phase 5 — Spark Structured Streaming
+- [x] Phase 5 — Spark Structured Streaming
 - [ ] Phase 6 — Behavioural streaming features
 - [ ] Phase 7 — Event time and watermarking
 - [ ] Phase 8 — Real-time ML scoring

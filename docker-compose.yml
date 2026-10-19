@@ -47,6 +47,27 @@ services:
       BOOTSTRAP: kafka:9092
     restart: "no"
 
+  # Spark Structured Streaming job (local[*] master inside one container).
+  spark:
+    build:
+      context: .
+      dockerfile: streaming/Dockerfile
+    image: fraud-platform/spark:latest
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      STARTING_OFFSETS: latest
+      LAKE_PATH: /data/lake
+      CHECKPOINT_ROOT: /data/checkpoints
+    ports:
+      - "4040:4040"   # Spark UI
+    volumes:
+      - ./data/lake:/data/lake
+      - spark-checkpoints:/data/checkpoints
+    restart: unless-stopped
+
   # Experiment tracking + model registry. SQLite metadata and artefacts live
   # in a named volume; artefacts are proxied through the server (--serve-artifacts)
   # so clients only need the tracking URI.
@@ -71,4 +92,5 @@ services:
 
 volumes:
   kafka-data:
+  spark-checkpoints:
   mlflow-data:

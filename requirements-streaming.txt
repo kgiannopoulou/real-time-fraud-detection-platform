@@ -1,0 +1,5 @@
+# Python dependencies inside the Spark image (Python 3.10, pyspark 4.0.1 is
+# provided by the base image).
+numpy==2.2.6
+pandas==2.3.3
+pyarrow==21.0.0

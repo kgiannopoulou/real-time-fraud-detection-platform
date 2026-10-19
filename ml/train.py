@@ -20,7 +20,7 @@ import argparse
 import itertools
 import os
 import time
-from datetime import UTC, datetime
+from datetime import datetime, timezone
 
 import lightgbm as lgb
 import numpy as np
@@ -184,7 +184,7 @@ def build_spec(run: dict, version: str = "local") -> dict:
     return {
         "model_type": "xgboost",
         "version": version,
-        "trained_at": datetime.now(UTC).isoformat(timespec="seconds"),
+        "trained_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "features": FEATURES,
         "threshold": metrics.threshold,
         "risk_tables": run["risk"].to_dict(),

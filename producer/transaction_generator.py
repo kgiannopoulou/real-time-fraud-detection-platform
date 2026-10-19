@@ -33,7 +33,7 @@ import sys
 import time
 from collections.abc import Iterator
 from dataclasses import dataclass, field
-from datetime import UTC, datetime, timedelta
+from datetime import datetime, timedelta, timezone
 
 # --------------------------------------------------------------------------- #
 # Reference data
@@ -372,7 +372,7 @@ class TransactionGenerator:
 
     def generate_history(self, days: float = 3.0, start: datetime | None = None) -> list[dict]:
         """Labelled historical transactions covering ``days`` of simulated time."""
-        start = start or datetime(2026, 9, 1, tzinfo=UTC)
+        start = start or datetime(2026, 9, 1, tzinfo=timezone.utc)
         return list(self.simulate(start, start + timedelta(days=days)))
 
     def stream(self, rate: float | None = None, realtime: bool = True) -> Iterator[dict]:
@@ -381,7 +381,7 @@ class TransactionGenerator:
         When ``realtime`` is true the generator sleeps so that events are
         emitted when their simulated timestamp is reached.
         """
-        origin = datetime.now(UTC)
+        origin = datetime.now(timezone.utc)
         wall_origin = time.monotonic()
         for tx in self.simulate(origin):
             event_time = _parse_ts(tx["timestamp"])
