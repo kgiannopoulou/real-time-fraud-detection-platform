@@ -25,6 +25,19 @@ Transaction producer ─► Kafka (transactions) ─► Spark Structured Streami
 Airflow ► retraining · MLflow ► experiments + registry · Prometheus/Grafana ► monitoring
 ```
 
+## Quickstart
+
+```bash
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+
+python producer/transaction_generator.py --rate 20   # continuous JSON transactions
+python -m ml.dataset                                  # labelled history -> data/raw/transactions.parquet
+python -m ml.eda                                      # summary + charts in docs/images/
+```
+
+See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis.
+
 ## Repository layout
 
 | Path | Purpose |
@@ -42,7 +55,7 @@ Airflow ► retraining · MLflow ► experiments + registry · Prometheus/Grafan
 
 ## Roadmap
 
-- [ ] Phase 1 — Transaction generator and dataset
+- [x] Phase 1 — Transaction generator and dataset
 - [ ] Phase 2 — Baseline fraud model
 - [ ] Phase 3 — MLflow tracking and registry
 - [ ] Phase 4 — Kafka ingestion
