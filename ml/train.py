@@ -1,17 +1,24 @@
 """Train and compare fraud models, then persist the production candidate.
 
-    python -m ml.train
+    python -m ml.train                 # compare model families, save + track XGBoost
+    python -m ml.train --sweep         # XGBoost hyper-parameter sweep (one MLflow run each)
 
 Pipeline: load labelled transactions -> chronological train/valid/test split
 -> features (risk encodings fitted on train only) -> train Logistic
 Regression, Random Forest, XGBoost and LightGBM -> pick each model's decision
 threshold on the validation split -> report metrics on the untouched test
 split -> save the XGBoost model to ``ml/artifacts/``.
+
+When ``MLFLOW_TRACKING_URI`` is set (or ``--tracking-uri`` is passed) every
+run is logged to MLflow and the XGBoost model is registered as
+``fraud-detector``.
 """
 
 from __future__ import annotations
 
 import argparse
+import itertools
+import os
 import time
 from datetime import UTC, datetime
 
@@ -22,6 +29,7 @@ import xgboost as xgb
 from sklearn.ensemble import RandomForestClassifier
 from sklearn.impute import SimpleImputer
 from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score
 from sklearn.pipeline import make_pipeline
 from sklearn.preprocessing import StandardScaler
 
@@ -30,6 +38,8 @@ from ml.evaluate import Metrics, best_f1_threshold, evaluate, threshold_table
 from ml.feature_pipeline import FEATURES, TARGET, RiskTables, build_features, time_split
 from ml.predict import ARTIFACT_DIR, save_artifacts
 
+ALL_FAMILIES = ("logistic_regression", "random_forest", "xgboost", "lightgbm")
+
 XGB_PARAMS = {
     "n_estimators": 600,
     "max_depth": 5,
@@ -37,6 +47,12 @@ XGB_PARAMS = {
     "subsample": 0.8,
     "colsample_bytree": 0.8,
     "min_child_weight": 2,
+}
+
+SWEEP_GRID = {
+    "max_depth": [3, 5, 7],
+    "learning_rate": [0.05, 0.1],
+    "min_child_weight": [1, 5],
 }
 
 
@@ -88,11 +104,19 @@ def fit_model(name: str, model, train: pd.DataFrame, valid: pd.DataFrame):
     return model
 
 
-def train(seed: int = 42, xgb_params: dict | None = None, verbose: bool = True) -> dict:
-    """Train every candidate; returns models, metrics and the XGBoost booster."""
+def train(
+    seed: int = 42,
+    xgb_params: dict | None = None,
+    families: tuple[str, ...] = ALL_FAMILIES,
+    df: pd.DataFrame | None = None,
+    prepared: tuple | None = None,
+    verbose: bool = True,
+) -> dict:
+    """Train the requested model families; returns models, metrics and the XGBoost booster."""
     xgb_params = {**XGB_PARAMS, **(xgb_params or {})}
-    df = load_synthetic()
-    risk, train_df, valid_df, test_df = prepare(df)
+    if prepared is None:
+        prepared = prepare(load_synthetic() if df is None else df)
+    risk, train_df, valid_df, test_df = prepared
     if verbose:
         print(
             f"train {len(train_df):,} | valid {len(valid_df):,} | test {len(test_df):,} rows; "
@@ -100,15 +124,19 @@ def train(seed: int = 42, xgb_params: dict | None = None, verbose: bool = True) 
         )
 
     results: dict[str, dict] = {}
-    for name, model in candidate_models(seed, xgb_params).items():
+    models = candidate_models(seed, xgb_params)
+    for name in families:
+        model = models[name]
         started = time.perf_counter()
         fit_model(name, model, train_df, valid_df)
-        threshold = best_f1_threshold(valid_df[TARGET], model.predict_proba(valid_df[FEATURES])[:, 1])
+        valid_scores = model.predict_proba(valid_df[FEATURES])[:, 1]
+        threshold = best_f1_threshold(valid_df[TARGET], valid_scores)
         test_scores = model.predict_proba(test_df[FEATURES])[:, 1]
         metrics = evaluate(test_df[TARGET], test_scores, threshold)
         results[name] = {
             "model": model,
             "metrics": metrics,
+            "valid_pr_auc": float(average_precision_score(valid_df[TARGET], valid_scores)),
             "scores": test_scores,
             "seconds": time.perf_counter() - started,
         }
@@ -122,6 +150,7 @@ def train(seed: int = 42, xgb_params: dict | None = None, verbose: bool = True) 
         "params": {**xgb_params, "best_iteration": int(xgb_model.best_iteration)},
         "test": test_df,
         "train_rows": len(train_df),
+        "prepared": prepared,
     }
 
 
@@ -165,16 +194,53 @@ def build_spec(run: dict, version: str = "local") -> dict:
     }
 
 
+def sweep_configs() -> list[dict]:
+    keys = list(SWEEP_GRID)
+    return [dict(zip(keys, values, strict=True)) for values in itertools.product(*SWEEP_GRID.values())]
+
+
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Train fraud models")
     parser.add_argument("--seed", type=int, default=42)
+    parser.add_argument("--sweep", action="store_true", help="XGBoost hyper-parameter sweep")
+    parser.add_argument("--tracking-uri", default=os.getenv("MLFLOW_TRACKING_URI"))
+    parser.add_argument("--promote", action="store_true", help="set the 'champion' alias on the new version")
     args = parser.parse_args(argv)
 
     np.random.seed(args.seed)
-    run = train(seed=args.seed)
-    print_report(run)
-    save_artifacts(run["booster"], build_spec(run), ARTIFACT_DIR)
-    print(f"\nmodel saved -> {ARTIFACT_DIR.relative_to(ARTIFACT_DIR.parents[1])}")
+    tracker = None
+    if args.tracking_uri:
+        from ml.tracking import Tracker
+
+        tracker = Tracker(args.tracking_uri)
+
+    if args.sweep:
+        prepared = prepare(load_synthetic())
+        best = None
+        for i, params in enumerate(sweep_configs(), start=1):
+            run = train(args.seed, params, families=("xgboost",), prepared=prepared, verbose=i == 1)
+            valid_pr_auc = run["results"]["xgboost"]["valid_pr_auc"]
+            print(f"[{i:>2}] {params} -> validation PR-AUC {valid_pr_auc:.4f}")
+            if tracker:
+                tracker.log_run(run, build_spec(run), run_name=f"sweep-{i:02d}", register=False)
+            # Select on the validation split; the test split stays untouched.
+            if best is None or valid_pr_auc > best["results"]["xgboost"]["valid_pr_auc"]:
+                best = run
+        run = best
+        print(f"\nbest: {run['params']}")
+    else:
+        run = train(seed=args.seed)
+        print_report(run)
+
+    spec = build_spec(run)
+    if tracker:
+        version = tracker.log_run(
+            run, spec, run_name="sweep-best" if args.sweep else "train", register=True, promote=args.promote
+        )
+        spec["version"] = version
+        print(f"\nlogged to MLflow ({args.tracking_uri}); registered fraud-detector v{version}")
+    save_artifacts(run["booster"], spec, ARTIFACT_DIR)
+    print(f"model saved -> {ARTIFACT_DIR.relative_to(ARTIFACT_DIR.parents[1])}")
 
 
 if __name__ == "__main__":

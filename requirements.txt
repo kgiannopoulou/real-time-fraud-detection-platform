@@ -6,3 +6,4 @@ scikit-learn==1.9.1
 matplotlib==3.11.2
 xgboost==3.4.1
 lightgbm==4.7.0
+mlflow==3.17.1

@@ -1,5 +1,28 @@
-# Local platform. Services are added phase by phase (Kafka in Phase 4,
-# Spark in Phase 5, PostgreSQL in Phase 10, ...). See README "Roadmap".
+# Local platform. Services are added phase by phase; see README "Roadmap".
 name: fraud-platform
 
-services: {}
+services:
+  # Experiment tracking + model registry. SQLite metadata and artefacts live
+  # in a named volume; artefacts are proxied through the server (--serve-artifacts)
+  # so clients only need the tracking URI.
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v3.17.1
+    command: >
+      mlflow server
+      --host 0.0.0.0 --port 5000
+      --backend-store-uri sqlite:////mlflow/mlflow.db
+      --artifacts-destination /mlflow/artifacts
+      --serve-artifacts
+      --allowed-hosts localhost,localhost:5000,127.0.0.1,127.0.0.1:5000,mlflow,mlflow:5000
+    ports:
+      - "5000:5000"
+    volumes:
+      - mlflow-data:/mlflow
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+
+volumes:
+  mlflow-data:

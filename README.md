@@ -39,6 +39,23 @@ python -m ml.predict                                  # score recent transaction
 python -m ml.public_benchmark                         # same model families on the public ULB dataset
 ```
 
+### Experiment tracking (MLflow)
+
+```bash
+docker compose up -d mlflow                          # http://localhost:5000
+export MLFLOW_TRACKING_URI=http://localhost:5000     # PowerShell: $env:MLFLOW_TRACKING_URI="http://localhost:5000"
+python -m ml.train                                   # logged + registered as fraud-detector v1 ("champion")
+python -m ml.train --sweep                           # 12-run XGBoost sweep, best registered as a new version
+```
+
+Each run records hyper-parameters, test metrics (ROC-AUC, PR-AUC, precision,
+recall, F1, threshold), the comparison models' metrics, a precision-recall
+plot, the confusion matrix and the portable serving artefacts. The sweep picks
+its winner on **validation** PR-AUC so the test split stays untouched. Serving
+components load whichever registry version carries the `champion` alias.
+
+![MLflow experiment runs](docs/images/mlflow_runs.png)
+
 See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
 [docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
@@ -61,7 +78,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 
 - [x] Phase 1 — Transaction generator and dataset
 - [x] Phase 2 — Baseline fraud model
-- [ ] Phase 3 — MLflow tracking and registry
+- [x] Phase 3 — MLflow tracking and registry
 - [ ] Phase 4 — Kafka ingestion
 - [ ] Phase 5 — Spark Structured Streaming
 - [ ] Phase 6 — Behavioural streaming features

@@ -10,6 +10,7 @@ scikit-learn versions.
 from __future__ import annotations
 
 import json
+import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -63,6 +64,26 @@ class FraudModel:
             },
             index=rows.index,
         )
+
+
+def load_serving_model(
+    tracking_uri: str | None = None, alias: str = "champion", fallback_dir: Path | str = ARTIFACT_DIR
+) -> FraudModel:
+    """Resolve the model to serve.
+
+    With a tracking URI the version carrying ``alias`` in the MLflow registry
+    is downloaded; otherwise (or if the registry is unreachable) the local
+    artefacts from the last ``python -m ml.train`` are used.
+    """
+    if tracking_uri:
+        try:
+            from ml.tracking import download_champion
+
+            cache = Path(tempfile.gettempdir()) / "fraud-model" / alias
+            return FraudModel.load(download_champion(tracking_uri, cache, alias))
+        except Exception as exc:  # registry down or no champion yet
+            print(f"[model] registry unavailable ({exc!s:.120}); falling back to {fallback_dir}")
+    return FraudModel.load(fallback_dir)
 
 
 def save_artifacts(
