@@ -3,282 +3,237 @@
 [![CI](https://github.com/kgiannopoulou/real-time-fraud-detection-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/kgiannopoulou/real-time-fraud-detection-platform/actions/workflows/ci.yml)
 
 Production-style streaming data platform for detecting fraudulent card
-transactions in real time: event ingestion with Kafka, stateful feature
-engineering with Spark Structured Streaming, ML scoring with a registered
-model, and serving, monitoring and retraining around it.
-
-> 🚧 Work in progress — the platform is built phase by phase (see the roadmap).
-
-## Target architecture
-
-```text
-Transaction producer ─► Kafka (transactions) ─► Spark Structured Streaming
-                                                  │  validation, features
-                                   ┌──────────────┴──────────────┐
-                                   ▼                             ▼
-                            Data lake (Parquet)          Fraud scoring (MLflow model)
-                                                                 │
-                                                  Kafka (fraud_predictions)
-                                                       │                │
-                                                   PostgreSQL        Alerts
-                                                       │
-                                                   Dashboard
-
-Airflow ► retraining · MLflow ► experiments + registry · Prometheus/Grafana ► monitoring
-```
-
-## Run the whole platform
-
-```bash
-docker compose up -d --build          # ~5 min on first build; trains a first model if the registry is empty
-python producer/producer.py --rate 30 # or: docker compose --profile demo up -d producer
-python scripts/smoke_test.py          # health checks + end-to-end verification
-```
-
-| Service | URL | Notes |
-| --- | --- | --- |
-| Fraud dashboard (Streamlit) | http://localhost:8501 | live monitor, alerts, data quality |
-| Prediction API (FastAPI) | http://localhost:8000/docs | `POST /predict`, alerts, stats |
-| Grafana | http://localhost:3001 | streaming + model/drift dashboards (admin / admin) |
-| Prometheus | http://localhost:9090 | metrics and alert rules |
-| MLflow | http://localhost:5000 | experiments + model registry |
-| Airflow | http://localhost:8080 | retraining DAG (admin / admin) |
-| Spark UI | http://localhost:4040 | structured streaming queries |
-| Kafka | localhost:9094 | topics `transactions`, `fraud_predictions`, `fraud_alerts`, `dead_letter_transactions` |
-| PostgreSQL | localhost:5436 | db/user `fraud` |
-
-On a fresh checkout `model-bootstrap` generates the labelled dataset, trains
-XGBoost and registers it as the `champion` before Spark and the API start.
-Credentials are local-development defaults.
-
-## Develop locally
-
-Tests: `pytest` (unit + integration when the stack is up), `scripts/test_spark.sh`
-(Spark tests in the Spark image) — see [docs/testing.md](docs/testing.md).
-
-CI (GitHub Actions, `.github/workflows/ci.yml`) runs on every push and pull
-request: **lint** (ruff, generated dashboards up to date, compose valid) ->
-**unit tests** with coverage -> **integration tests** (Kafka + PostgreSQL via
-compose) and **Spark tests** (Java 17, PySpark 4.0) -> **Docker build** of all
-five images (layer cache) -> **end-to-end**: the full platform via
-`docker compose up` plus the smoke test.
-
-```bash
-python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
-pip install -r requirements-dev.txt
-
-python producer/transaction_generator.py --rate 20   # continuous JSON transactions
-python -m ml.dataset                                  # labelled history -> data/raw/transactions.parquet
-python -m ml.eda                                      # summary + charts in docs/images/
-python -m ml.train                                    # compare LR / RF / XGBoost / LightGBM, save XGBoost
-python -m ml.predict                                  # score recent transactions with the saved model
-python -m ml.public_benchmark                         # same model families on the public ULB dataset
-```
-
-### Experiment tracking (MLflow)
-
-```bash
-docker compose up -d mlflow                          # http://localhost:5000
-export MLFLOW_TRACKING_URI=http://localhost:5000     # PowerShell: $env:MLFLOW_TRACKING_URI="http://localhost:5000"
-python -m ml.train                                   # logged + registered as fraud-detector v1 ("champion")
-python -m ml.train --sweep                           # 12-run XGBoost sweep, best registered as a new version
-```
-
-Each run records hyper-parameters, test metrics (ROC-AUC, PR-AUC, precision,
-recall, F1, threshold), the comparison models' metrics, a precision-recall
-plot, the confusion matrix and the portable serving artefacts. The sweep picks
-its winner on **validation** PR-AUC so the test split stays untouched. Serving
-components load whichever registry version carries the `champion` alias.
-
-![MLflow experiment runs](docs/images/mlflow_runs.png)
-
-### Real-time scoring
-
-```text
-Kafka ─► Spark (validate ─► features ─► XGBoost champion) ─► Kafka fraud_predictions
-                                                           └► data/lake/predictions
-```
-
-```bash
-python producer/consumer.py --topic fraud_predictions -v
-```
-
-```json
-{"transaction_id": "tx_5456d1f41635", "user_id": "user_11497", "amount_eur": 642.83,
- "merchant_category": "crypto", "country": "GR", "event_time": "2026-10-19T20:11:04.804Z",
- "fraud_probability": 0.027257, "prediction": "LEGIT", "model_version": "4",
- "risk_factors": ["new device (device_96084ae47b)", "first transaction from BR", "very small amount (EUR 3.24)"],
- "scored_at": "2026-10-19T20:11:06.517Z", "features": {"tx_count_2m": 0.0, "amount_ratio": 0.008, ...}}
-```
-
-The driver resolves the registry version with the `champion` alias and ships
-the raw artefacts to executors as a **broadcast variable**; executors score
-with `mapInPandas`, caching the deserialized booster per version. Every
-micro-batch the driver re-checks the registry (at most once a minute), so
-promoting a new version in MLflow hot-swaps the model without restarting the
-stream. Each prediction is explained with TreeSHAP-based **risk factors**
-([docs/explainability.md](docs/explainability.md)). Lake writes go to a batch-specific directory overwritten on replay,
-which keeps them idempotent under Spark's at-least-once `foreachBatch`.
-
-### Serving store and API
-
-PostgreSQL (`localhost:5436`, schema in
-[storage/schema.sql](storage/schema.sql)) holds
-what the dashboard and API query interactively: `transactions`,
-`fraud_predictions` (score, model version, risk factors, SHAP values,
-features, latency), `fraud_alerts`, `transaction_stats_minute` and
-`model_metadata`. Spark writes them from `foreachPartition` with
-`ON CONFLICT` upserts, so replayed micro-batches never duplicate rows.
-Historical data stays in the Parquet lake for analytics and retraining.
-
-The FastAPI service (`http://localhost:8000/docs`) adds synchronous scoring for
-authorization flows: `POST /predict` rebuilds the card holder's behavioural
-state from PostgreSQL with the same `UserState` class and returns the score
-with its explanation.
-
-```bash
-curl -X POST localhost:8000/predict -H 'content-type: application/json' -d '{
-  "user_id": "user_5326", "merchant_id": "merchant_9", "merchant_category": "jewelry",
-  "amount": 2400, "currency": "EUR", "country": "NG", "device_id": "device_new"}'
-# {"fraud_probability": 0.9997, "prediction": "FRAUD", "model_version": "4",
-#  "risk_factors": ["new device (device_new)", "elevated fraud rate for transactions in NG (14.3%)",
-#                   "high amount (EUR 2,400)", ...], "features": {"amount_ratio": 178.6, ...}}
-```
-
-Other endpoints: `GET /predictions`, `GET /predictions/{id}`, `GET /alerts`,
-`PATCH /alerts/{id}` (analyst feedback: confirmed / dismissed),
-`GET /stats/summary`, `GET /health`.
-
-### Fraud dashboard
-
-```bash
-docker compose up -d --build dashboard              # http://localhost:8501
-```
+transactions in real time. Transactions flow through **Kafka** into **Spark
+Structured Streaming**, which validates them, computes stateful per-customer
+behavioural features in event time, scores them with an **XGBoost** model
+served from the **MLflow** registry and explains every decision. Predictions
+land in Kafka, **PostgreSQL** and a Parquet lake; a **FastAPI** service and a
+**Streamlit** dashboard sit on top. **Airflow** retrains and promotes models,
+**Prometheus/Grafana** watch both the pipeline and the model, and the whole
+stack starts with one `docker compose up` — with **Terraform** for AWS.
 
 ![Real-time fraud monitor](docs/images/dashboard.png)
 
-KPIs, transactions and fraud per minute, the score distribution, fraud by
-country / merchant category / hour, a live transaction table and a detail
-panel with the model's reasons for each flagged transaction. An **Alerts** tab
-lets an analyst confirm or dismiss alerts — the feedback that becomes labels
-for retraining. The page refreshes itself every 5 seconds (`st.fragment`).
+## At a glance
 
-### Automated retraining (Airflow)
+| | |
+| --- | --- |
+| Model quality (time-based test split) | **PR-AUC 0.795**, precision 0.89, recall 0.69, ROC-AUC 0.99 — XGBoost with behavioural features ([comparison](docs/model-comparison.md)) |
+| Same approach on real data | PR-AUC 0.754 on the public ULB credit-card fraud dataset |
+| Behavioural features | lift PR-AUC from **0.50 → 0.79** over transaction-only features |
+| Throughput (single Spark container, laptop) | **~450 tx/s** sustained without loss; saturates at ~680 tx/s ([benchmark](docs/benchmark.md)) |
+| Latency, Kafka ingest → prediction written | **p95 4.2 s** at 50 tx/s, 6.4 s at 200 tx/s (2-second micro-batches, incl. SHAP + 3 sinks) |
+| Quality gates | 58 tests (unit, integration, Spark), CI with Docker builds + end-to-end smoke test, `terraform validate` |
+
+## Architecture
+
+![Architecture](docs/architecture.png)
+
+1. **Ingestion** — the producer publishes JSON transactions keyed by
+   `user_id` (`acks=all`, idempotent) to the `transactions` topic.
+2. **Validation** — Spark parses each record against an explicit schema and
+   11 data-quality rules; invalid, duplicate and too-late records go to a
+   **dead-letter queue** instead of crashing the job.
+3. **Behavioural features** — `applyInPandasWithState` keeps one
+   `UserState` per card in RocksDB-backed state: velocity over 2 min / 5 min /
+   1 h / 24 h, amount vs. the card's own average, new country, new device,
+   merchant/country diversity, time since the last transaction.
+4. **Scoring + explanation** — the MLflow `champion` model is broadcast to
+   executors and hot-swapped when a new version is promoted; TreeSHAP turns
+   each score into reasons ("amount 8.2x higher than the customer's 24h
+   average", "5 transactions in the previous 2 minutes").
+5. **Serving** — predictions and alerts are published to Kafka, upserted into
+   PostgreSQL (API + dashboard) and written to the Parquet lake (history for
+   analytics and retraining).
+6. **Model lifecycle** — a weekly Airflow DAG validates data, retrains,
+   evaluates the candidate *against the current champion on the same newest
+   data* and promotes it only if it wins.
+7. **Observability** — Prometheus scrapes Spark, the API, the producer and
+   Kafka; Grafana shows throughput, lag, latency, state, dead letters and
+   resources next to the score distribution, fraud rate and feature drift
+   (PSI), with six alert rules.
+
+## Tech stack — and why
+
+| Component | Choice | Why |
+| --- | --- | --- |
+| Event log | **Apache Kafka** (KRaft) | Decouples transaction producers from downstream processing and provides durable, replayable, per-key-ordered event ingestion |
+| Stream processing | **Spark Structured Streaming** 4.0 | Stateful behavioural feature computation in event time with watermarks, exactly-once state via checkpoints, and the same engine scales from a laptop to a cluster |
+| Model | **XGBoost** (vs. Logistic Regression, Random Forest, LightGBM) | Best PR-AUC, fast, small portable JSON artefact, exact TreeSHAP explanations built in |
+| Experiment tracking / registry | **MLflow** | Every run's parameters, metrics, plots and artefacts; a `champion` alias decouples training from serving |
+| Serving store | **PostgreSQL** | Serves recent predictions, alerts and per-user history to the dashboard and API with indexed queries, while historical events are stored separately in the lake for analytics and training |
+| History | **Parquet data lake** (volume locally, S3 in the cloud) | Cheap, columnar, partitioned history for retraining and ad-hoc analysis |
+| Online API | **FastAPI** | Synchronous scoring for authorization flows, rebuilding user state from PostgreSQL with the same feature code |
+| Dashboard | **Streamlit** + Plotly | Fast to build, live-refreshing fraud monitor and alert triage |
+| Orchestration | **Apache Airflow** | Scheduled batch work (retraining, evaluation, promotion) — deliberately *not* the streaming path |
+| Monitoring | **Prometheus + Grafana** | Infrastructure and ML monitoring from one metrics pipeline, with alert rules |
+| Packaging | **Docker Compose** | The whole platform — 13 services — reproducible with one command |
+| CI | **GitHub Actions** | Lint → unit → integration + Spark tests → image builds → end-to-end smoke test |
+| Cloud | **AWS + Terraform** | MSK, S3, RDS, ECS Fargate, ALB, Managed Prometheus, Secrets Manager as code |
+
+## Engineering decisions worth discussing
+
+* **One feature implementation for training and serving.** `UserState` in
+  `streaming/features.py` builds the training set (by replaying history) and
+  runs inside Spark's state store; a test asserts the two produce identical
+  features. No train/serve skew. → [docs/features.md](docs/features.md)
+* **Event time, not processing time.** Features are evaluated at each
+  transaction's own timestamp against strictly earlier history, so late and
+  out-of-order events get the right features. Event-time processing and
+  watermarking are used to handle late-arriving transactions while limiting
+  streaming state growth (per-user state expires through an event-time
+  timeout). → [docs/event-time.md](docs/event-time.md)
+* **Nothing is dropped silently.** Events later than the allowed lateness,
+  invalid payloads and duplicate ids are routed to a dead-letter topic/table
+  with reasons. → [docs/data-quality.md](docs/data-quality.md)
+* **At-least-once sinks made idempotent.** `foreachBatch` can replay a batch,
+  so PostgreSQL writes are `ON CONFLICT` upserts and lake writes overwrite a
+  batch-specific directory.
+* **Accuracy is never reported.** At 0.6 % fraud a "never fraud" model is
+  99.4 % accurate. Models are compared on PR-AUC with a chronological split;
+  the threshold is a cost trade-off between analyst reviews and missed fraud.
+  → [docs/model-comparison.md](docs/model-comparison.md)
+* **Promotion is a decision, not a side effect.** Retraining registers a
+  candidate; it becomes champion only if it beats production on the newest
+  data by a margin; serving hot-swaps via the registry alias.
+  → [docs/retraining.md](docs/retraining.md)
+* **Explanations from the model itself.** Risk factors come from TreeSHAP
+  contributions, so they can never contradict the score.
+  → [docs/explainability.md](docs/explainability.md)
+* **Drift is measured, not guessed.** Training-time decile baselines ship
+  with the model; production PSI per feature drives a Grafana alert.
+  → [docs/monitoring.md](docs/monitoring.md)
+
+## Run it
 
 ```bash
-docker compose up -d --build airflow                 # http://localhost:8080  (admin / admin)
+git clone https://github.com/kgiannopoulou/real-time-fraud-detection-platform.git
+cd real-time-fraud-detection-platform
+docker compose up -d --build           # first build ~5 min; trains a first model if the registry is empty
+
+python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
+pip install -r requirements-dev.txt
+python producer/producer.py --rate 30  # stream transactions (or: docker compose --profile demo up -d producer)
+python scripts/smoke_test.py           # health checks + end-to-end verification
+```
+
+| Service | URL |
+| --- | --- |
+| Fraud dashboard (Streamlit) | http://localhost:8501 |
+| Prediction API (FastAPI docs) | http://localhost:8000/docs |
+| Grafana (admin / admin) | http://localhost:3001 |
+| Prometheus | http://localhost:9090 |
+| MLflow | http://localhost:5000 |
+| Airflow (admin / admin) | http://localhost:8080 |
+| Spark UI | http://localhost:4040 |
+| Kafka (host) / PostgreSQL | `localhost:9094` / `localhost:5436` (db/user `fraud`) |
+
+Credentials are local-development defaults.
+
+### Demo scenarios
+
+```bash
+# Real-world imperfections: late, out-of-order, duplicate and invalid events
+python producer/producer.py --rate 30 --late-rate 0.03 --very-late-rate 0.003 \
+    --duplicate-rate 0.01 --invalid-rate 0.01
+
+# Data drift: amounts double -> PSI rises -> FeatureDrift alert in Prometheus/Grafana
+python producer/producer.py --rate 30 --amount-drift 2.0 --metrics-port 8001
+
+# Score a single transaction synchronously
+curl -X POST localhost:8000/predict -H 'content-type: application/json' -d '{
+  "user_id": "user_42", "merchant_id": "merchant_9", "merchant_category": "jewelry",
+  "amount": 2400, "currency": "EUR", "country": "NG", "device_id": "device_new"}'
+
+# Retrain now (otherwise weekly) and watch the stream hot-swap the model
 docker compose exec airflow airflow dags trigger retrain_fraud_model
 ```
 
-`retrain_fraud_model` runs weekly: validate data -> extract -> features ->
-train (registered in MLflow) -> evaluate candidate **and** champion on the same
-newest data -> promote only if the candidate wins by a margin. Promotion moves
-the MLflow `champion` alias, which the stream and API hot-swap. Airflow
-orchestrates batch work only; it never sits in the streaming path. Details:
-[docs/retraining.md](docs/retraining.md).
-
-### Data quality and dead-letter queue
-
-Invalid records (malformed JSON, missing ids, non-positive or non-numeric
-amounts, unsupported currencies, invalid countries, future timestamps),
-duplicate transaction ids and events beyond the allowed lateness are routed
-to the `dead_letter_transactions` topic and table with their rejection
-reasons; the stream keeps running. The producer can inject all of them:
-`--invalid-rate 0.01 --duplicate-rate 0.01`. See
-[docs/data-quality.md](docs/data-quality.md).
-
-### Monitoring (Prometheus + Grafana)
+### Work on the ML side locally
 
 ```bash
-docker compose up -d prometheus grafana kafka-exporter   # Grafana http://localhost:3001, Prometheus :9090
-python producer/producer.py --rate 30 --metrics-port 8001 --amount-drift 2.0   # drift drill
+python -m ml.dataset                    # labelled history -> data/raw/transactions.parquet
+python -m ml.eda                        # exploratory analysis -> docs/images/
+python -m ml.train                      # compare LR / RF / XGBoost / LightGBM, save XGBoost
+python -m ml.train --sweep              # hyper-parameter sweep tracked in MLflow
+python -m ml.explain                    # global SHAP importance + example explanations
+python -m ml.public_benchmark           # model families on the public ULB dataset
+pytest                                  # tests; scripts/test_spark.sh runs the Spark tests in Docker
 ```
 
-Infrastructure: throughput, Kafka lag, end-to-end and inference latency,
-batch duration, state size, watermark drops, dead letters, CPU/memory. ML:
-score distribution, fraud rate vs training, serving version and **feature
-drift (PSI)** against baselines stored with the model. Six alert rules
-(lag, latency, stalled scoring, DLQ rate, drift, anomalous fraud rate). See
-[docs/monitoring.md](docs/monitoring.md).
+## Results
 
-![Model and drift dashboard](docs/images/grafana_ml.png)
+**Model comparison** (chronological split, threshold tuned on validation,
+metrics on the untouched test split):
 
-### Cloud deployment
+| Model | PR-AUC | ROC-AUC | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- |
+| Logistic Regression | 0.568 | 0.967 | 0.574 | 0.518 | 0.545 |
+| Random Forest | 0.772 | 0.982 | 0.878 | 0.693 | 0.774 |
+| **XGBoost** | **0.795** | **0.990** | **0.893** | 0.693 | **0.780** |
+| LightGBM | 0.784 | 0.988 | 0.842 | **0.706** | 0.768 |
 
-Local components map onto AWS managed services — MSK, S3 (lake +
-checkpoints), RDS PostgreSQL, ECS Fargate (Spark, API, dashboard, MLflow),
-MWAA, Managed Prometheus/Grafana, ECR, Secrets Manager — with configuration
-changes only: Kafka SASL/TLS settings (`producer/kafka_config.py`), `s3a://`
-lake paths (Spark image `--build-arg WITH_S3=true`) and connection strings.
-See [docs/cloud-deployment.md](docs/cloud-deployment.md).
+**Streaming benchmark** (whole platform on one laptop, single Spark
+container, 2-second trigger; latency = Kafka ingest → prediction written):
 
-The whole AWS environment is Terraform in [infrastructure/](infrastructure/):
-VPC and security groups, MSK (SASL/SCRAM + TLS), RDS PostgreSQL, S3 lake,
-ECR, ECS Fargate services behind an ALB, Secrets Manager, Managed
-Prometheus with the alert rules, and a scheduled retraining task.
-`terraform validate` runs in CI.
+| Target rate | Sustained throughput | p50 | p95 | p99 |
+| --- | --- | --- | --- | --- |
+| 50 tx/s | 51 tx/s | 2.8 s | 4.2 s | 5.7 s |
+| 200 tx/s | 190 tx/s | 3.5 s | 6.4 s | 7.6 s |
+| 500 tx/s | 453 tx/s | 10.6 s | 15.7 s | 17.2 s |
+| 1000 tx/s | 683 tx/s (saturated) | 31.2 s | 44.2 s | 45.9 s |
 
-### Kafka ingestion
+![MLflow experiment tracking](docs/images/mlflow_runs.png)
 
-```bash
-docker compose up -d kafka kafka-init                # KRaft broker on localhost:9094 + topics
-python producer/consumer.py                          # terminal B: received transaction tx_...
-python producer/producer.py --rate 20                # terminal A: produced transaction tx_...
-```
-
-Topics: `transactions` (6 partitions, keyed by `user_id` so each card's events
-stay ordered) and `fraud_predictions`. The event contract is
-[schemas/transaction.v1.json](schemas/transaction.v1.json); messages carry a
-`schema_version` header. The producer uses `acks=all` with idempotence, so
-broker retries never create duplicates.
-
-### Spark Structured Streaming
-
-```bash
-docker compose up -d --build spark                   # Spark UI: http://localhost:4040
-python producer/producer.py --rate 30 --quiet
-docker compose logs -f spark                         # running per-category statistics
-```
-
-The job (`streaming/fraud_stream.py`) deserializes each Kafka record against an
-**explicit schema** (`streaming/schemas.py`), attaches the list of violated
-validation rules, drops invalid records, normalises amounts to EUR and appends
-every valid transaction to the Parquet data lake (`data/lake/transactions`,
-partitioned by event date). State lives in RocksDB-backed state stores with
-checkpoints, so the job resumes exactly where it stopped after a restart.
-
-Per-user **behavioural features** (velocity over 2 min/5 min/1 h/24 h, amount
-vs. the user's 24 h average, new country, new device, merchant/country
-diversity, time since the last transaction) are computed with
-`applyInPandasWithState`, using the same `UserState` class that builds the
-training set — see [docs/features.md](docs/features.md). They lift XGBoost
-from 0.50 to **0.79 PR-AUC**.
-
-**Event-time processing and watermarking are used to handle late-arriving
-transactions while limiting streaming state growth.** Features and 1-minute
-windows are computed on the transaction's own timestamp, a 2-minute watermark
-bounds state (per-user state expires through an event-time timeout), and
-events later than the allowed lateness go to a side output rather than being
-dropped silently — see [docs/event-time.md](docs/event-time.md). The producer
-can inject late and out-of-order events: `--late-rate 0.05 --very-late-rate 0.005`.
-
-See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
-[docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
+![Model and drift monitoring](docs/images/grafana_ml.png)
 
 ## Repository layout
 
 | Path | Purpose |
 | --- | --- |
-| `producer/` | Synthetic transaction generator and Kafka producer |
-| `streaming/` | Spark Structured Streaming job, schemas, streaming features |
-| `ml/` | Feature pipeline, training, evaluation, prediction |
-| `api/` | Prediction serving API |
-| `dashboard/` | Real-time fraud monitor |
-| `airflow/dags/` | Scheduled retraining / batch pipelines |
-| `monitoring/` | Prometheus and Grafana configuration |
-| `infrastructure/` | Terraform for the cloud deployment |
-| `tests/` | Unit and integration tests |
-| `docs/` | Architecture and design notes |
+| `producer/` | Transaction simulator, Kafka producer with fault injection, debug consumer, Kafka security config |
+| `streaming/` | Spark job, explicit schemas + validation, shared `UserState` features, stateful operator, scoring, metrics |
+| `ml/` | Dataset, EDA, feature pipeline, training, evaluation, explainability, drift (PSI), MLflow tracking/registry, retraining steps |
+| `storage/` | PostgreSQL schema and idempotent writers |
+| `api/` | FastAPI online scoring and read API |
+| `dashboard/` | Streamlit fraud monitor |
+| `airflow/` | Retraining DAG and Airflow image |
+| `monitoring/` | Prometheus config, alert rules, Grafana dashboards-as-code |
+| `infrastructure/` | Kafka topic script, Terraform for AWS, MLflow cloud image |
+| `scripts/` | Smoke test, benchmark, Spark test runner |
+| `tests/` | Unit, integration and Spark tests |
+| `docs/` | Design notes, results, screenshots |
+
+## Documentation
+
+[Dataset & EDA](docs/eda.md) ·
+[Model comparison](docs/model-comparison.md) ·
+[Behavioural features](docs/features.md) ·
+[Event time & watermarks](docs/event-time.md) ·
+[Explainability](docs/explainability.md) ·
+[Data quality & DLQ](docs/data-quality.md) ·
+[Retraining](docs/retraining.md) ·
+[Monitoring](docs/monitoring.md) ·
+[Testing](docs/testing.md) ·
+[Benchmark](docs/benchmark.md) ·
+[Cloud deployment](docs/cloud-deployment.md) ·
+[Terraform](infrastructure/README.md)
+
+## Scope and honest limitations
+
+* **Data.** The platform trains on a transaction simulator with injected
+  fraud scenarios and realistic confounders (travel, big purchases, new
+  phones); real card data with user/merchant/device fields is not public. The
+  modelling approach is cross-checked on the real, anonymised ULB dataset.
+  Labels for retraining are simulated (in production they arrive from
+  chargebacks and analyst decisions, days later).
+* **Scale.** Benchmarks are from a single Spark container on a laptop; the
+  design scales out by partition (`user_id`), which is not measured here.
+* **Cloud.** The AWS architecture is fully expressed in Terraform and
+  validated in CI, but not kept running in an account.
+* **Cold start.** A freshly started stream has no per-card history; features
+  warm up over the first minutes, exactly as they would after a real restart
+  without restoring state.
 
 ## Roadmap
 
@@ -301,4 +256,8 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 17 — CI/CD
 - [x] Phase 18 — Cloud deployment
 - [x] Phase 19 — Terraform
-- [ ] Phase 20 — Documentation
+- [x] Phase 20 — Architecture diagram and documentation
+
+Next ideas: label-delay-aware evaluation with a chargeback feed, a graph
+feature for shared devices across cards, Kafka Schema Registry with Avro,
+and a canary (shadow) scoring path for candidate models.

@@ -1,0 +1,167 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><title>Architecture</title>
+<style>
+  html,body{margin:0;background:#ffffff;font-family:"Segoe UI",Inter,Arial,sans-serif}
+  svg{display:block}
+  .box{fill:#ffffff;stroke:#c9ccd4;stroke-width:1.5}
+  .title{font-size:17px;font-weight:700;fill:#1d2433}
+  .sub{font-size:12.5px;fill:#5b6273}
+  .tiny{font-size:11.5px;fill:#5b6273}
+  .lbl{font-size:11.5px;fill:#3d4454;font-weight:600}
+  .arrow{stroke:#5b6273;stroke-width:1.8;fill:none;marker-end:url(#a)}
+  .arrow.blue{stroke:#2a78d6;marker-end:url(#ab)}
+  .arrow.red{stroke:#d03b3b;marker-end:url(#ar)}
+  .arrow.dash{stroke-dasharray:5 4}
+  .band{fill:#f5f6f8;stroke:none}
+  .step{fill:#eef4fc;stroke:#bcd3f1;stroke-width:1}
+  .steptxt{font-size:13px;fill:#1d2433;font-weight:600}
+  .stepsub{font-size:11.5px;fill:#4a5262}
+</style></head>
+<body>
+<svg width="1600" height="900" viewBox="0 0 1600 900" xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <marker id="a" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#5b6273"/></marker>
+    <marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#2a78d6"/></marker>
+    <marker id="ar" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0L10,5L0,10z" fill="#d03b3b"/></marker>
+  </defs>
+
+  <text x="40" y="52" style="font-size:26px;font-weight:800;fill:#1d2433">Real-Time Fraud Detection Platform</text>
+  <text x="40" y="78" class="sub">Streaming path (top) runs continuously · model lifecycle and observability (bottom) run around it</text>
+
+  <!-- Producer -->
+  <rect x="40" y="300" width="190" height="120" rx="10" class="box"/>
+  <text x="58" y="332" class="title">Transaction</text>
+  <text x="58" y="352" class="title">producer</text>
+  <text x="58" y="378" class="tiny">Python simulator · keyed by user</text>
+  <text x="58" y="396" class="tiny">late / duplicate / invalid events</text>
+
+  <!-- Kafka -->
+  <rect x="290" y="180" width="210" height="360" rx="10" class="box"/>
+  <rect x="290" y="180" width="210" height="6" rx="3" fill="#1d2433"/>
+  <text x="310" y="215" class="title">Apache Kafka</text>
+  <text x="310" y="235" class="tiny">KRaft · acks=all · idempotent</text>
+  <g class="lbl">
+    <rect x="306" y="258" width="178" height="40" rx="6" fill="#f5f6f8"/><text x="318" y="283">transactions (6 partitions)</text>
+    <rect x="306" y="310" width="178" height="40" rx="6" fill="#f5f6f8"/><text x="318" y="335">fraud_predictions</text>
+    <rect x="306" y="362" width="178" height="40" rx="6" fill="#fbeaea"/><text x="318" y="387">fraud_alerts</text>
+    <rect x="306" y="414" width="178" height="40" rx="6" fill="#fdf3e1"/><text x="318" y="439">dead_letter_transactions</text>
+  </g>
+  <text x="310" y="490" class="tiny">event contract:</text>
+  <text x="310" y="507" class="tiny">schemas/transaction.v1.json</text>
+
+  <path d="M230 360 L300 278" class="arrow"/>
+
+  <!-- Spark -->
+  <rect x="560" y="120" width="440" height="470" rx="12" class="box"/>
+  <rect x="560" y="120" width="440" height="6" rx="3" fill="#e25a1c"/>
+  <text x="582" y="156" class="title">Spark Structured Streaming</text>
+  <text x="582" y="176" class="tiny">event time · 2-min watermark · RocksDB state · checkpoints</text>
+
+  <rect x="582" y="194" width="396" height="58" rx="8" class="step"/>
+  <text x="598" y="218" class="steptxt">1 · Parse + validate</text>
+  <text x="598" y="238" class="stepsub">explicit schema, 11 data-quality rules → invalid to DLQ</text>
+
+  <rect x="582" y="262" width="396" height="58" rx="8" class="step"/>
+  <text x="598" y="286" class="steptxt">2 · Behavioural features (per user state)</text>
+  <text x="598" y="306" class="stepsub">applyInPandasWithState · velocity, amount ratio, new device…</text>
+
+  <rect x="582" y="330" width="396" height="58" rx="8" class="step"/>
+  <text x="598" y="354" class="steptxt">3 · Score with the champion model</text>
+  <text x="598" y="374" class="stepsub">XGBoost broadcast to executors · hot-swapped from MLflow</text>
+
+  <rect x="582" y="398" width="396" height="58" rx="8" class="step"/>
+  <text x="598" y="422" class="steptxt">4 · Explain</text>
+  <text x="598" y="442" class="stepsub">TreeSHAP → "amount 8.2x the customer's average"</text>
+
+  <rect x="582" y="466" width="396" height="58" rx="8" class="step"/>
+  <text x="598" y="490" class="steptxt">5 · Write (idempotent, foreachBatch)</text>
+  <text x="598" y="510" class="stepsub">Kafka · PostgreSQL upserts · Parquet lake · 1-min windows</text>
+  <text x="582" y="566" class="tiny">same UserState class builds the training set → no train/serve skew</text>
+
+  <path d="M500 278 L582 222" class="arrow"/>
+  <path d="M582 500 C 540 500, 540 340, 500 334" class="arrow"/>
+  <text x="506" y="478" class="tiny">predictions,</text><text x="506" y="494" class="tiny">alerts, DLQ</text>
+  <path d="M520 548 L520 548" />
+
+  <!-- Sinks -->
+  <rect x="1060" y="150" width="220" height="110" rx="10" class="box"/>
+  <rect x="1060" y="150" width="220" height="6" rx="3" fill="#2a78d6"/>
+  <text x="1080" y="186" class="title">PostgreSQL</text>
+  <text x="1080" y="207" class="tiny">transactions · predictions · alerts</text>
+  <text x="1080" y="224" class="tiny">DLQ · minute stats · model metadata</text>
+  <text x="1080" y="241" class="tiny">serving store</text>
+
+  <rect x="1060" y="300" width="220" height="100" rx="10" class="box"/>
+  <rect x="1060" y="300" width="220" height="6" rx="3" fill="#1baf7a"/>
+  <text x="1080" y="336" class="title">Data lake</text>
+  <text x="1080" y="357" class="tiny">Parquet on volume / S3</text>
+  <text x="1080" y="374" class="tiny">transactions · predictions</text>
+
+  <path d="M1000 470 C 1030 470, 1030 210, 1060 206" class="arrow"/>
+  <path d="M1000 490 C 1035 490, 1035 352, 1060 350" class="arrow"/>
+
+  <!-- Consumers -->
+  <rect x="1340" y="115" width="220" height="110" rx="10" class="box"/>
+  <text x="1360" y="156" class="title">Prediction API</text>
+  <text x="1360" y="177" class="tiny">FastAPI · POST /predict</text>
+  <text x="1360" y="194" class="tiny">state rebuilt from PostgreSQL</text><text x="1360" y="211" class="tiny" fill="#2a78d6">champion model from MLflow</text>
+
+  <rect x="1340" y="245" width="220" height="100" rx="10" class="box"/>
+  <text x="1360" y="281" class="title">Fraud dashboard</text>
+  <text x="1360" y="302" class="tiny">Streamlit · live monitor</text>
+  <text x="1360" y="319" class="tiny">alert triage · data quality</text>
+
+  <rect x="1340" y="370" width="220" height="90" rx="10" class="box" stroke="#d03b3b"/>
+  <text x="1360" y="404" class="title" fill="#d03b3b">Analysts</text>
+  <text x="1360" y="425" class="tiny">confirm / dismiss alerts</text>
+  <text x="1360" y="442" class="tiny">→ labels for retraining</text>
+
+  <path d="M1280 190 L1340 172" class="arrow"/>
+  <path d="M1280 215 L1340 292" class="arrow"/>
+  <path d="M1450 345 L1450 370" class="arrow red"/>
+
+  <!-- Bottom band -->
+  <rect x="0" y="630" width="1600" height="270" class="band"/>
+  <text x="40" y="668" class="sub" style="font-weight:700;fill:#1d2433">MODEL LIFECYCLE &amp; OBSERVABILITY</text>
+
+  <rect x="40" y="690" width="300" height="170" rx="10" class="box"/>
+  <rect x="40" y="690" width="300" height="6" rx="3" fill="#6250d6"/>
+  <text x="60" y="726" class="title">Apache Airflow</text>
+  <text x="60" y="748" class="tiny">weekly retrain_fraud_model DAG</text>
+  <text x="60" y="768" class="tiny">validate → extract → features → train</text>
+  <text x="60" y="786" class="tiny">→ evaluate vs champion → promote?</text>
+  <text x="60" y="812" class="tiny">batch orchestration only —</text>
+  <text x="60" y="829" class="tiny">never in the transaction path</text>
+
+  <rect x="420" y="690" width="320" height="170" rx="10" class="box"/>
+  <rect x="420" y="690" width="320" height="6" rx="3" fill="#2a78d6"/>
+  <text x="440" y="726" class="title">MLflow</text>
+  <text x="440" y="748" class="tiny">experiments · metrics · plots · SHAP</text>
+  <text x="440" y="768" class="tiny">registry: fraud-detector, alias "champion"</text>
+  <text x="440" y="788" class="tiny">portable artefacts: booster JSON + feature spec</text>
+  <text x="440" y="808" class="tiny">(+ PSI baselines for drift monitoring)</text>
+
+  <path d="M340 775 L420 775" class="arrow blue"/>
+  <text x="350" y="765" class="tiny" fill="#2a78d6">register</text>
+  <path d="M700 690 L770 590" class="arrow blue"/>
+  <text x="742" y="640" class="tiny" fill="#2a78d6">champion (hot-swap)</text>
+
+  <rect x="820" y="690" width="400" height="170" rx="10" class="box"/>
+  <rect x="820" y="690" width="400" height="6" rx="3" fill="#eb6834"/>
+  <text x="840" y="726" class="title">Prometheus + Grafana</text>
+  <text x="840" y="748" class="tiny">throughput · Kafka lag · e2e latency · batch duration</text>
+  <text x="840" y="768" class="tiny">state size · dead letters · CPU / memory</text>
+  <text x="840" y="788" class="tiny">score distribution · fraud rate · feature drift (PSI)</text>
+  <text x="840" y="808" class="tiny">6 alert rules (lag, latency, stall, DLQ, drift, fraud rate)</text>
+  <path d="M900 690 L880 590" class="arrow dash"/>
+  <text x="890" y="650" class="tiny">scrape</text>
+
+  <rect x="1300" y="690" width="260" height="170" rx="10" class="box"/>
+  <text x="1320" y="726" class="title">Delivery</text>
+  <text x="1320" y="748" class="tiny">docker compose up (13 services)</text>
+  <text x="1320" y="768" class="tiny">GitHub Actions: lint · tests · Spark</text>
+  <text x="1320" y="786" class="tiny">tests · image builds · end-to-end</text>
+  <text x="1320" y="806" class="tiny">Terraform: MSK · RDS · S3 · ECS</text>
+  <text x="1320" y="824" class="tiny">· ALB · Managed Prometheus</text>
+</svg>
+</body></html>

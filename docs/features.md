@@ -58,7 +58,7 @@ features, and is excluded from scoring.
 | Model (XGBoost, test split) | PR-AUC | Precision | Recall | F1 |
 | --- | --- | --- | --- | --- |
 | Baseline features (Phase 2) | 0.503 | 0.521 | 0.518 | 0.520 |
-| + behavioural features | **0.795** | **0.880** | **0.706** | **0.784** |
+| + behavioural features | **0.795** | **0.893** | **0.693** | **0.780** |
 
 All four model families improve; Logistic Regression jumps from 0.13 to 0.57
 PR-AUC because velocity and amount-ratio features are close to linearly

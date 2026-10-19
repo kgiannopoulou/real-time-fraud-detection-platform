@@ -44,6 +44,17 @@ Because a missed fraud is far more expensive than a review, the cheapest
 operating point sits at a *low* threshold — higher recall, more false
 positives.
 
+## With behavioural features (Phase 6, current model)
+
+| Model | ROC-AUC | PR-AUC | Precision | Recall | F1 |
+| --- | --- | --- | --- | --- | --- |
+| Logistic Regression | 0.967 | 0.568 | 0.574 | 0.518 | 0.545 |
+| Random Forest | 0.982 | 0.772 | 0.878 | 0.693 | 0.774 |
+| **XGBoost** | **0.990** | **0.795** | **0.893** | 0.693 | **0.780** |
+| LightGBM | 0.988 | 0.784 | 0.842 | 0.706 | 0.768 |
+
+See [features.md](features.md) for the features themselves.
+
 ## Public benchmark (ULB credit-card fraud, OpenML #1597)
 
 `python -m ml.public_benchmark` — 284,807 real European card transactions,
