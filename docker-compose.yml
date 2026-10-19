@@ -47,6 +47,24 @@ services:
       BOOTSTRAP: kafka:9092
     restart: "no"
 
+  # Serving store: recent transactions, predictions, alerts, model metadata.
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: fraud
+      POSTGRES_USER: fraud
+      POSTGRES_PASSWORD: fraud
+    ports:
+      - "5436:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U fraud -d fraud"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+
   # Spark Structured Streaming job (local[*] master inside one container).
   spark:
     build:
@@ -58,8 +76,11 @@ services:
         condition: service_completed_successfully
       mlflow:
         condition: service_healthy
+      postgres:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
       MLFLOW_TRACKING_URI: http://mlflow:5000
       MODEL_ALIAS: champion
       MODEL_REFRESH_SECONDS: 60
@@ -72,6 +93,26 @@ services:
       - ./data/lake:/data/lake
       - spark-checkpoints:/data/checkpoints
       - ./ml/artifacts:/app/ml/artifacts:ro   # fallback model when the registry is unreachable
+    restart: unless-stopped
+
+  # Online scoring + read API over the serving store.
+  api:
+    build:
+      context: .
+      dockerfile: api/Dockerfile
+    image: fraud-platform/api:latest
+    depends_on:
+      postgres:
+        condition: service_healthy
+      mlflow:
+        condition: service_healthy
+    environment:
+      POSTGRES_DSN: postgresql://fraud:fraud@postgres:5432/fraud
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+    ports:
+      - "8000:8000"
+    volumes:
+      - ./ml/artifacts:/app/ml/artifacts:ro   # fallback model
     restart: unless-stopped
 
   # Experiment tracking + model registry. SQLite metadata and artefacts live
@@ -98,5 +139,6 @@ services:
 
 volumes:
   kafka-data:
+  postgres-data:
   spark-checkpoints:
   mlflow-data:

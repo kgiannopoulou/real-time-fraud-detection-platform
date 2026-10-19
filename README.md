@@ -84,6 +84,35 @@ stream. Each prediction is explained with TreeSHAP-based **risk factors**
 ([docs/explainability.md](docs/explainability.md)). Lake writes go to a batch-specific directory overwritten on replay,
 which keeps them idempotent under Spark's at-least-once `foreachBatch`.
 
+### Serving store and API
+
+PostgreSQL (`localhost:5436`, schema in
+[infrastructure/postgres/init.sql](infrastructure/postgres/init.sql)) holds
+what the dashboard and API query interactively: `transactions`,
+`fraud_predictions` (score, model version, risk factors, SHAP values,
+features, latency), `fraud_alerts`, `transaction_stats_minute` and
+`model_metadata`. Spark writes them from `foreachPartition` with
+`ON CONFLICT` upserts, so replayed micro-batches never duplicate rows.
+Historical data stays in the Parquet lake for analytics and retraining.
+
+The FastAPI service (`http://localhost:8000/docs`) adds synchronous scoring for
+authorization flows: `POST /predict` rebuilds the card holder's behavioural
+state from PostgreSQL with the same `UserState` class and returns the score
+with its explanation.
+
+```bash
+curl -X POST localhost:8000/predict -H 'content-type: application/json' -d '{
+  "user_id": "user_5326", "merchant_id": "merchant_9", "merchant_category": "jewelry",
+  "amount": 2400, "currency": "EUR", "country": "NG", "device_id": "device_new"}'
+# {"fraud_probability": 0.9997, "prediction": "FRAUD", "model_version": "4",
+#  "risk_factors": ["new device (device_new)", "elevated fraud rate for transactions in NG (14.3%)",
+#                   "high amount (EUR 2,400)", ...], "features": {"amount_ratio": 178.6, ...}}
+```
+
+Other endpoints: `GET /predictions`, `GET /predictions/{id}`, `GET /alerts`,
+`PATCH /alerts/{id}` (analyst feedback: confirmed / dismissed),
+`GET /stats/summary`, `GET /health`.
+
 ### Kafka ingestion
 
 ```bash
@@ -157,7 +186,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 7 — Event time and watermarking
 - [x] Phase 8 — Real-time ML scoring
 - [x] Phase 9 — Explainability
-- [ ] Phase 10 — PostgreSQL serving store
+- [x] Phase 10 — PostgreSQL serving store
 - [ ] Phase 11 — Fraud dashboard
 - [ ] Phase 12 — Airflow retraining
 - [ ] Phase 13 — Data quality and dead-letter queue

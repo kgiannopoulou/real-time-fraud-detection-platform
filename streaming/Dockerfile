@@ -20,6 +20,7 @@ WORKDIR /app
 COPY --chown=spark:spark producer/ producer/
 COPY --chown=spark:spark ml/ ml/
 COPY --chown=spark:spark streaming/ streaming/
+COPY --chown=spark:spark storage/ storage/
 
 ENV PYTHONPATH=/app \
     PYSPARK_PYTHON=python3 \

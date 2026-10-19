@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import os
 import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -72,8 +73,10 @@ class ModelBroadcaster:
         alias: str = "champion",
         refresh_seconds: float = 60.0,
         fallback_dir: Path = ARTIFACT_DIR,
+        on_change: Callable[[dict], None] | None = None,
     ):
         self.spark = spark
+        self.on_change = on_change
         self.tracking_uri = tracking_uri
         self.alias = alias
         self.refresh_seconds = refresh_seconds
@@ -115,6 +118,11 @@ class ModelBroadcaster:
         self.version = payload.version
         if old is not None:
             old.unpersist()
+        if self.on_change is not None:
+            try:
+                self.on_change(json.loads(payload.spec_json))
+            except Exception as exc:  # metadata is best-effort; never stop scoring
+                print(f"[scoring] could not record model metadata: {exc!s:.120}", flush=True)
 
 
 _MODEL_CACHE: dict[str, FraudModel] = {}

@@ -8,9 +8,10 @@ Queries started by this job:
   lake, partitioned by event date (the history used for analytics/retraining);
 * ``scoring`` — per-user behavioural features computed with
   ``applyInPandasWithState`` (one ``UserState`` per card in the state store),
-  scored by the champion model and published to ``fraud_predictions`` (plus
-  the lake) from ``foreachBatch``;
-* ``window_stats`` — per-minute event-time statistics with a watermark;
+  scored by the champion model and published from ``foreachBatch`` to Kafka
+  (``fraud_predictions``, ``fraud_alerts``), PostgreSQL and the lake;
+* ``window_stats`` — per-minute event-time statistics with a watermark,
+  upserted into PostgreSQL;
 * ``late_events`` — events that arrived later than the allowed lateness
   (side output for reconciliation instead of a silent drop).
 """
@@ -27,6 +28,7 @@ from pyspark.sql.streaming.state import GroupStateTimeout
 
 from ml.feature_pipeline import FEATURES
 from producer.transaction_generator import FX_TO_EUR
+from storage.postgres import record_model, spark_partition_writer, write_window_stats
 from streaming.schemas import event_time, parse_value, validation_errors
 from streaming.scoring import ModelBroadcaster, latency_summary, model_settings, score
 from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compute_user_features
@@ -36,6 +38,10 @@ from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compu
 class StreamConfig:
     bootstrap: str = field(default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"))
     transactions_topic: str = field(default_factory=lambda: os.getenv("TRANSACTIONS_TOPIC", "transactions"))
+    alerts_topic: str = field(default_factory=lambda: os.getenv("FRAUD_ALERTS_TOPIC", "fraud_alerts"))
+    postgres_dsn: str = field(
+        default_factory=lambda: os.getenv("POSTGRES_DSN", "postgresql://fraud:fraud@postgres:5432/fraud")
+    )
     predictions_topic: str = field(
         default_factory=lambda: os.getenv("FRAUD_PREDICTIONS_TOPIC", "fraud_predictions")
     )
@@ -203,6 +209,16 @@ def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
                 .option("topic", cfg.predictions_topic)
                 .save()
             )
+            alerts = scored.filter(F.col("prediction") == "FRAUD")
+            (
+                prediction_records(alerts)
+                .write.format("kafka")
+                .option("kafka.bootstrap.servers", cfg.bootstrap)
+                .option("topic", cfg.alerts_topic)
+                .save()
+            )
+            # Serving store for the API/dashboard (idempotent upserts).
+            scored.foreachPartition(spark_partition_writer(FEATURES, cfg.postgres_dsn))
             # Overwriting a batch-specific directory makes the lake write
             # idempotent when Spark replays a batch after a failure.
             scored.write.mode("overwrite").parquet(f"{cfg.lake_path}/predictions/batch_id={batch_id:08d}")
@@ -250,10 +266,12 @@ def window_stats(transactions: DataFrame, cfg: StreamConfig) -> DataFrame:
 
 
 def start_window_stats(stats: DataFrame, cfg: StreamConfig):
+    def write(batch: DataFrame, batch_id: int) -> None:
+        write_window_stats([row.asDict() for row in batch.collect()], cfg.postgres_dsn)
+
     return (
         stats.writeStream.queryName("window_stats")
-        .format("console")
-        .option("truncate", "false")
+        .foreachBatch(write)
         .option("checkpointLocation", cfg.checkpoint("window_stats"))
         .trigger(processingTime="30 seconds")
         .outputMode("append")
@@ -285,7 +303,9 @@ def main() -> None:
     on_time, too_late = split_by_lateness(transactions, cfg)
 
     start_lake_sink(transactions, cfg)
-    broadcaster = ModelBroadcaster(spark, **model_settings())
+    broadcaster = ModelBroadcaster(
+        spark, on_change=lambda spec: record_model(spec, cfg.postgres_dsn), **model_settings()
+    )
     start_scoring(user_features(on_time, cfg), cfg, broadcaster)
     start_window_stats(window_stats(on_time, cfg), cfg)
     start_late_sink(too_late, cfg)

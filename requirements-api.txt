@@ -1,0 +1,9 @@
+# Serving API (Python 3.12 image)
+fastapi==0.149.0
+uvicorn[standard]==0.54.0
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+numpy==2.5.4
+pandas==3.0.6
+xgboost==3.2.0
+mlflow-skinny==3.17.1
