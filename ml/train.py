@@ -171,7 +171,7 @@ def print_report(run: dict) -> None:
     print("\n" + best.confusion_matrix_text())
     test = run["test"]
     print("\nOperating points (XGBoost, test split; cost = 5 EUR per review + missed fraud amount)")
-    for row in threshold_table(test[TARGET], results["xgboost"]["scores"], test["amount"]):
+    for row in threshold_table(test[TARGET], results["xgboost"]["scores"], test["amount_eur"]):
         print(
             f"  thr {row['threshold']:.1f}: precision {row['precision']:.3f} recall {row['recall']:.3f}"
             f"  alerts {row['alerts']:>5,}  missed {row['missed_fraud']:>4}"

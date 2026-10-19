@@ -106,7 +106,7 @@ def main() -> None:
     df = load_synthetic().sort_values("timestamp")
     features = build_features(df, model.risk).tail(10)
     scored = features.join(model.predict(features))
-    cols = ["transaction_id", "user_id", "amount", "merchant_category", "country"]
+    cols = ["transaction_id", "user_id", "amount_eur", "merchant_category", "country"]
     print(scored[cols + ["fraud_probability", "prediction", "is_fraud"]].to_string(index=False))
 
 

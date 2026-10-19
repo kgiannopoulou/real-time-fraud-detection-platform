@@ -375,12 +375,17 @@ class TransactionGenerator:
         start = start or datetime(2026, 9, 1, tzinfo=timezone.utc)
         return list(self.simulate(start, start + timedelta(days=days)))
 
-    def stream(self, rate: float | None = None, realtime: bool = True) -> Iterator[dict]:
+    def stream(self, realtime: bool = True, seed: int | None = None) -> Iterator[dict]:
         """Infinite stream of transactions stamped with the current time.
+
+        The population (users, devices, merchants) is fixed by the constructor
+        seed, but events are drawn from a fresh RNG (``seed=None``: OS entropy)
+        so a restarted producer never replays the same transaction ids.
 
         When ``realtime`` is true the generator sleeps so that events are
         emitted when their simulated timestamp is reached.
         """
+        self.rng = random.Random(seed)
         origin = datetime.now(timezone.utc)
         wall_origin = time.monotonic()
         for tx in self.simulate(origin):

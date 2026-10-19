@@ -6,7 +6,11 @@ Queries started by this job:
 
 * ``lake``  — every valid, enriched transaction appended to the Parquet data
   lake, partitioned by event date (the history used for analytics/retraining);
-* ``stats`` — running per-category statistics printed to the console.
+* ``features`` — per-user behavioural features computed with
+  ``applyInPandasWithState`` (one ``UserState`` per card in the state store),
+  appended to the lake;
+* ``suspicious`` — console view of transactions with extreme behavioural
+  signals (amount far above the user's average, bursts of transactions).
 """
 
 from __future__ import annotations
@@ -16,9 +20,11 @@ from dataclasses import dataclass, field
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
+from pyspark.sql.streaming.state import GroupStateTimeout
 
 from producer.transaction_generator import FX_TO_EUR
 from streaming.schemas import event_time, parse_value, validation_errors
+from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compute_user_features
 
 
 @dataclass(frozen=True)
@@ -111,22 +117,64 @@ def start_lake_sink(transactions: DataFrame, cfg: StreamConfig):
     )
 
 
-def start_console_stats(transactions: DataFrame, cfg: StreamConfig):
-    stats = transactions.groupBy("merchant_category").agg(
-        F.count("*").alias("transactions"),
-        F.round(F.avg("amount_eur"), 2).alias("avg_amount_eur"),
-        F.round(F.max("amount_eur"), 2).alias("max_amount_eur"),
-    )
+def user_features(transactions: DataFrame) -> DataFrame:
+    """Behavioural features from each user's history kept in the state store."""
     return (
-        stats.writeStream.queryName("stats")
-        .format("console")
-        .option("truncate", "false")
-        .option("numRows", 20)
-        .option("checkpointLocation", cfg.checkpoint("stats"))
-        .outputMode("complete")
-        .trigger(processingTime="30 seconds")
+        transactions.select(*PASSTHROUGH)
+        .groupBy("user_id")
+        .applyInPandasWithState(
+            compute_user_features,
+            outputStructType=FEATURES_SCHEMA,
+            stateStructType=STATE_SCHEMA,
+            outputMode="append",
+            timeoutConf=GroupStateTimeout.NoTimeout,
+        )
+    )
+
+
+def start_feature_sinks(features: DataFrame, cfg: StreamConfig):
+    lake = (
+        features.withColumn("event_date", F.to_date("event_time"))
+        .writeStream.queryName("features")
+        .format("parquet")
+        .option("path", f"{cfg.lake_path}/features")
+        .option("checkpointLocation", cfg.checkpoint("features"))
+        .partitionBy("event_date")
+        .trigger(processingTime=cfg.lake_trigger)
+        .outputMode("append")
         .start()
     )
+    suspicious = (
+        features.filter(
+            (F.col("tx_count_24h") > 0)  # ignore cold-start cards
+            & (
+                (F.col("amount_ratio") > 5)
+                | (F.col("tx_count_2m") >= 3)
+                | (F.col("is_new_country") == 1)
+                | (F.col("is_new_device") == 1)
+            )
+        )
+        .select(
+            "event_time",
+            "user_id",
+            "amount_eur",
+            "merchant_category",
+            "country",
+            F.round("amount_ratio", 1).alias("amount_ratio"),
+            "tx_count_2m",
+            "tx_count_1h",
+            "is_new_country",
+            "is_new_device",
+        )
+        .writeStream.queryName("suspicious")
+        .format("console")
+        .option("truncate", "false")
+        .option("checkpointLocation", cfg.checkpoint("suspicious"))
+        .trigger(processingTime=cfg.trigger)
+        .outputMode("append")
+        .start()
+    )
+    return lake, suspicious
 
 
 def main() -> None:
@@ -138,7 +186,7 @@ def main() -> None:
     transactions = enrich(parsed)
 
     start_lake_sink(transactions, cfg)
-    start_console_stats(transactions, cfg)
+    start_feature_sinks(user_features(transactions), cfg)
     print(f"[fraud-stream] consuming {cfg.transactions_topic} @ {cfg.bootstrap}", flush=True)
     spark.streams.awaitAnyTermination()
 

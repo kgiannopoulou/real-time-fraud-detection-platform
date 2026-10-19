@@ -86,7 +86,9 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument("--bootstrap", default=os.getenv("KAFKA_BOOTSTRAP_SERVERS", "localhost:9094"))
     parser.add_argument("--topic", default=os.getenv("TRANSACTIONS_TOPIC", "transactions"))
     parser.add_argument("--rate", type=float, default=float(os.getenv("GENERATOR_RATE", "20")))
-    parser.add_argument("--seed", type=int, default=int(os.getenv("GENERATOR_SEED", "42")))
+    parser.add_argument(
+        "--seed", type=int, default=int(os.getenv("GENERATOR_SEED", "42")), help="population seed"
+    )
     parser.add_argument("--duration", type=float, default=0, help="seconds to run (0 = forever)")
     parser.add_argument("--limit", type=int, default=0, help="stop after N events (0 = no limit)")
     parser.add_argument(

@@ -23,6 +23,7 @@ COPY --chown=spark:spark streaming/ streaming/
 
 ENV PYTHONPATH=/app \
     PYSPARK_PYTHON=python3 \
+    PYTHONWARNINGS=ignore::FutureWarning \
     HOME=/tmp
 USER spark
 

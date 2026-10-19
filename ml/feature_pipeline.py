@@ -2,9 +2,12 @@
 
 Features fall in three groups:
 
-* **transaction** — amount (normalised to EUR) and hour of day;
+* **transaction** — amount normalised to EUR and hour of day;
 * **behavioural** — how the transaction compares with the card holder's own
-  recent history (frequency, average amount, amount ratio);
+  history: velocity over 2 min / 5 min / 1 h / 24 h, average amount and the
+  amount ratio, merchant and country diversity, new country / new device and
+  time since the previous transaction. They are computed by the *same*
+  ``streaming.features.UserState`` class the Spark job uses;
 * **risk encodings** — merchant category and country turned into smoothed
   fraud rates learned from the training split only.
 """
@@ -13,17 +16,15 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
-import numpy as np
 import pandas as pd
 
 from producer.transaction_generator import FX_TO_EUR
+from streaming.features import BEHAVIOURAL_FEATURES, UserState
 
 FEATURES = [
-    "amount",
+    "amount_eur",
     "hour_of_day",
-    "tx_count_1h",
-    "avg_amount",
-    "amount_ratio",
+    *BEHAVIOURAL_FEATURES,
     "merchant_risk",
     "country_risk",
 ]
@@ -58,41 +59,48 @@ class RiskTables:
 
 
 def amount_eur(df: pd.DataFrame) -> pd.Series:
-    return df["amount"] * df["currency"].map(FX_TO_EUR).fillna(1.0)
+    return (df["amount"] * df["currency"].map(FX_TO_EUR).fillna(1.0)).round(2)
+
+
+def epoch_seconds(timestamps: pd.Series) -> pd.Series:
+    return (timestamps - pd.Timestamp("1970-01-01", tz="UTC")).dt.total_seconds()
 
 
 def build_behavioural_features(df: pd.DataFrame) -> pd.DataFrame:
-    """Per-user features computed only from each user's *earlier* transactions."""
+    """Replay transactions in event-time order through per-user ``UserState``s."""
     out = df.sort_values(["timestamp", "transaction_id"]).reset_index(drop=True)
     out["amount_eur"] = amount_eur(out)
     out["hour_of_day"] = out["timestamp"].dt.hour
 
-    by_user = out.groupby("user_id", sort=False)
-    # Transactions by the same user in the hour before this one.
-    rolling = out.set_index("timestamp").groupby("user_id")["amount_eur"].rolling("1h", closed="left").count()
-    out["tx_count_1h"] = np.nan_to_num(_align_rolling(out, rolling))
-    # Mean of all previous amounts (NaN for the first transaction).
-    previous_sum = by_user["amount_eur"].cumsum() - out["amount_eur"]
-    previous_n = by_user.cumcount()
-    out["avg_amount"] = (previous_sum / previous_n.replace(0, np.nan)).astype(float)
-    out["amount_ratio"] = out["amount_eur"] / out["avg_amount"]
-    return out
+    records = zip(
+        epoch_seconds(out["timestamp"]).to_numpy(),
+        out["user_id"].to_numpy(),
+        out["transaction_id"].to_numpy(),
+        out["amount_eur"].to_numpy(),
+        out["merchant_id"].to_numpy(),
+        out["country"].to_numpy(),
+        out["device_id"].to_numpy(),
+        strict=True,
+    )
+    states: dict[str, UserState] = {}
+    rows = []
+    for t, user, tx_id, amount, merchant, country, device in records:
+        state = states.get(user)
+        if state is None:
+            state = states[user] = UserState()
+        rows.append(state.observe(float(t), tx_id, float(amount), merchant, country, device))
+    feats = pd.DataFrame(rows, columns=BEHAVIOURAL_FEATURES, index=out.index)
+    return pd.concat([out, feats], axis=1)
 
 
-def _align_rolling(df: pd.DataFrame, rolling: pd.Series) -> np.ndarray:
-    """Map a groupby-rolling result (grouped order) back onto ``df`` rows."""
-    order = df.sort_values("user_id", kind="stable").index
-    values = np.empty(len(df))
-    values[order.to_numpy()] = rolling.to_numpy()
-    return values
+def add_risk_features(df: pd.DataFrame, risk: RiskTables) -> pd.DataFrame:
+    df["merchant_risk"] = df["merchant_category"].map(risk.merchant_category).fillna(risk.prior)
+    df["country_risk"] = df["country"].map(risk.country).fillna(risk.prior)
+    return df
 
 
 def build_features(df: pd.DataFrame, risk: RiskTables) -> pd.DataFrame:
-    out = build_behavioural_features(df)
-    out["amount"] = out["amount_eur"]
-    out["merchant_risk"] = out["merchant_category"].map(risk.merchant_category).fillna(risk.prior)
-    out["country_risk"] = out["country"].map(risk.country).fillna(risk.prior)
-    return out
+    return add_risk_features(build_behavioural_features(df), risk)
 
 
 def time_split(

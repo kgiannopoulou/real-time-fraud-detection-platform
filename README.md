@@ -85,6 +85,13 @@ every valid transaction to the Parquet data lake (`data/lake/transactions`,
 partitioned by event date). State lives in RocksDB-backed state stores with
 checkpoints, so the job resumes exactly where it stopped after a restart.
 
+Per-user **behavioural features** (velocity over 2 min/5 min/1 h/24 h, amount
+vs. the user's 24 h average, new country, new device, merchant/country
+diversity, time since the last transaction) are computed with
+`applyInPandasWithState`, using the same `UserState` class that builds the
+training set — see [docs/features.md](docs/features.md). They lift XGBoost
+from 0.50 to **0.79 PR-AUC**.
+
 See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
 [docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
@@ -110,7 +117,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 3 — MLflow tracking and registry
 - [x] Phase 4 — Kafka ingestion
 - [x] Phase 5 — Spark Structured Streaming
-- [ ] Phase 6 — Behavioural streaming features
+- [x] Phase 6 — Behavioural streaming features
 - [ ] Phase 7 — Event time and watermarking
 - [ ] Phase 8 — Real-time ML scoring
 - [ ] Phase 9 — Explainability
