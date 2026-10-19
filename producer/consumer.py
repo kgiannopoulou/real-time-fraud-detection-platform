@@ -14,6 +14,8 @@ import uuid
 
 from confluent_kafka import Consumer, KafkaError
 
+from producer.kafka_config import librdkafka_settings
+
 LABELS = {
     "transactions": "transaction",
     "fraud_predictions": "prediction",
@@ -39,6 +41,7 @@ def main(argv: list[str] | None = None) -> None:
             "group.id": f"debug-{uuid.uuid4().hex[:8]}",
             "auto.offset.reset": "earliest" if args.from_beginning else "latest",
             "enable.auto.commit": False,
+            **librdkafka_settings(),
         }
     )
     consumer.subscribe([args.topic])

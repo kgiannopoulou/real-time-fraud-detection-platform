@@ -31,6 +31,7 @@ from pyspark.sql.streaming.state import GroupStateTimeout
 
 from ml.feature_pipeline import FEATURES
 from ml.monitoring import DRIFT_FEATURES
+from producer.kafka_config import spark_kafka_options
 from producer.transaction_generator import FX_TO_EUR
 from storage.postgres import (
     ensure_schema,
@@ -75,6 +76,10 @@ class StreamConfig:
     watermark: str = field(default_factory=lambda: os.getenv("WATERMARK_DELAY", "2 minutes"))
     allowed_lateness_s: int = field(default_factory=lambda: int(os.getenv("ALLOWED_LATENESS_SECONDS", "120")))
 
+    @property
+    def kafka_options(self) -> dict[str, str]:
+        return spark_kafka_options(self.bootstrap)
+
     def checkpoint(self, query: str) -> str:
         return f"{self.checkpoint_root}/{query}"
 
@@ -106,7 +111,7 @@ def build_spark(app_name: str = "fraud-stream") -> SparkSession:
 def read_transactions(spark: SparkSession, cfg: StreamConfig) -> DataFrame:
     return (
         spark.readStream.format("kafka")
-        .option("kafka.bootstrap.servers", cfg.bootstrap)
+        .options(**cfg.kafka_options)
         .option("subscribe", cfg.transactions_topic)
         .option("startingOffsets", cfg.starting_offsets)
         .option("maxOffsetsPerTrigger", cfg.max_offsets_per_trigger)
@@ -256,7 +261,7 @@ def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
             alerts = prediction_records(scored.filter(F.col("prediction") == "FRAUD"))
             records.unionByName(alerts.withColumn("topic", F.lit(cfg.alerts_topic))).write.format(
                 "kafka"
-            ).option("kafka.bootstrap.servers", cfg.bootstrap).save()
+            ).options(**cfg.kafka_options).save()
             # Serving store for the API/dashboard (idempotent upserts).
             scored.foreachPartition(spark_partition_writer(FEATURES, cfg.postgres_dsn))
             # Overwriting a batch-specific directory makes the lake write
@@ -352,7 +357,7 @@ def publish_dead_letters(records: DataFrame, cfg: StreamConfig) -> None:
     (
         records.select(F.col("transaction_id").alias("key"), payload.alias("value"))
         .write.format("kafka")
-        .option("kafka.bootstrap.servers", cfg.bootstrap)
+        .options(**cfg.kafka_options)
         .option("topic", cfg.dead_letter_topic)
         .save()
     )

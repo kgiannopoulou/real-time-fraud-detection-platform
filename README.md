@@ -203,6 +203,15 @@ drift (PSI)** against baselines stored with the model. Six alert rules
 
 ![Model and drift dashboard](docs/images/grafana_ml.png)
 
+### Cloud deployment
+
+Local components map onto AWS managed services — MSK, S3 (lake +
+checkpoints), RDS PostgreSQL, ECS Fargate (Spark, API, dashboard, MLflow),
+MWAA, Managed Prometheus/Grafana, ECR, Secrets Manager — with configuration
+changes only: Kafka SASL/TLS settings (`producer/kafka_config.py`), `s3a://`
+lake paths (Spark image `--build-arg WITH_S3=true`) and connection strings.
+See [docs/cloud-deployment.md](docs/cloud-deployment.md).
+
 ### Kafka ingestion
 
 ```bash
@@ -284,6 +293,6 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 15 — Full Docker Compose stack
 - [x] Phase 16 — Tests
 - [x] Phase 17 — CI/CD
-- [ ] Phase 18 — Cloud deployment
+- [x] Phase 18 — Cloud deployment
 - [ ] Phase 19 — Terraform
 - [ ] Phase 20 — Documentation

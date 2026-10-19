@@ -29,6 +29,7 @@ if __package__ in (None, ""):  # allow `python producer/producer.py`
 from confluent_kafka import KafkaException, Producer
 
 from producer.chaos import ChaosConfig, ChaosInjector
+from producer.kafka_config import librdkafka_settings
 from producer.transaction_generator import (
     GeneratorConfig,
     TransactionGenerator,
@@ -52,6 +53,7 @@ class TransactionProducer:
                 "enable.idempotence": True,
                 "linger.ms": 5,
                 "compression.type": "lz4",
+                **librdkafka_settings(),
             }
         )
 
