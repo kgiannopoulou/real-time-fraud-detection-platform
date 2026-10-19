@@ -51,6 +51,9 @@ Credentials are local-development defaults.
 
 ## Develop locally
 
+Tests: `pytest` (unit + integration when the stack is up), `scripts/test_spark.sh`
+(Spark tests in the Spark image) — see [docs/testing.md](docs/testing.md).
+
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
 pip install -r requirements-dev.txt
@@ -270,7 +273,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 13 — Data quality and dead-letter queue
 - [x] Phase 14 — Monitoring (Prometheus/Grafana)
 - [x] Phase 15 — Full Docker Compose stack
-- [ ] Phase 16 — Tests
+- [x] Phase 16 — Tests
 - [ ] Phase 17 — CI/CD
 - [ ] Phase 18 — Cloud deployment
 - [ ] Phase 19 — Terraform

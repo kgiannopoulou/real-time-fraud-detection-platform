@@ -14,6 +14,13 @@ select = ["E", "F", "W", "I", "B", "UP", "SIM"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra"
+markers = [
+    "integration: needs Kafka and PostgreSQL from docker compose",
+    "spark: needs pyspark and a Java runtime",
+]
+filterwarnings = [
+    "ignore:Using `httpx` with `starlette.testclient`",
+]
 
 [tool.ruff.lint.isort]
 known-third-party = ["airflow"]

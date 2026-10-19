@@ -10,6 +10,7 @@ scikit-learn versions.
 from __future__ import annotations
 
 import json
+import os
 import tempfile
 from dataclasses import dataclass
 from pathlib import Path
@@ -83,7 +84,7 @@ class FraudModel:
 
 
 def load_serving_model(
-    tracking_uri: str | None = None, alias: str = "champion", fallback_dir: Path | str = ARTIFACT_DIR
+    tracking_uri: str | None = None, alias: str = "champion", fallback_dir: Path | str | None = None
 ) -> FraudModel:
     """Resolve the model to serve.
 
@@ -91,6 +92,7 @@ def load_serving_model(
     is downloaded; otherwise (or if the registry is unreachable) the local
     artefacts from the last ``python -m ml.train`` are used.
     """
+    fallback_dir = fallback_dir or os.getenv("MODEL_DIR") or ARTIFACT_DIR
     if tracking_uri:
         try:
             from ml.registry import download_champion
