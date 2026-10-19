@@ -33,7 +33,6 @@ infrastructure/.terraform/
 infrastructure/*.tfstate
 infrastructure/*.tfstate.*
 infrastructure/*.tfplan
-infrastructure/.terraform.lock.hcl
 
 # OS / editors
 .DS_Store

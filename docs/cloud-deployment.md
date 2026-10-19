@@ -20,7 +20,7 @@ container images run in both places.
 | Spark checkpoints volume | **Amazon S3** (`s3a://…/checkpoints`) | S3 is strongly consistent; checkpoints survive task replacement |
 | PostgreSQL | **Amazon RDS for PostgreSQL 16** (Multi-AZ in production) | Managed backups, patching, failover for the serving store |
 | MLflow (SQLite + local artefacts) | MLflow on **ECS Fargate** with **RDS** backend store and **S3** artefact store (or SageMaker managed MLflow) | Shared tracking server and registry; artefacts in S3 |
-| Airflow container | **Amazon MWAA** | Managed scheduler/webserver; the DAG is unchanged |
+| Airflow container | **Amazon MWAA** — or, as in the Terraform, an **EventBridge-scheduled ECS task** running `python -m ml.retrain pipeline` | MWAA keeps the DAG and UI unchanged; the scheduled task is the low-cost equivalent |
 | API + dashboard containers | **ECS Fargate** behind an **Application Load Balancer** | Stateless services, horizontal scaling, health checks |
 | Prometheus + Grafana | **Amazon Managed Service for Prometheus** + **Amazon Managed Grafana** | Same metrics and PromQL; dashboards import as-is |
 | Images built locally | **Amazon ECR** | One repository per image, scanned on push |

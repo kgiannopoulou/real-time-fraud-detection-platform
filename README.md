@@ -212,6 +212,12 @@ changes only: Kafka SASL/TLS settings (`producer/kafka_config.py`), `s3a://`
 lake paths (Spark image `--build-arg WITH_S3=true`) and connection strings.
 See [docs/cloud-deployment.md](docs/cloud-deployment.md).
 
+The whole AWS environment is Terraform in [infrastructure/](infrastructure/):
+VPC and security groups, MSK (SASL/SCRAM + TLS), RDS PostgreSQL, S3 lake,
+ECR, ECS Fargate services behind an ALB, Secrets Manager, Managed
+Prometheus with the alert rules, and a scheduled retraining task.
+`terraform validate` runs in CI.
+
 ### Kafka ingestion
 
 ```bash
@@ -294,5 +300,5 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 16 — Tests
 - [x] Phase 17 — CI/CD
 - [x] Phase 18 — Cloud deployment
-- [ ] Phase 19 — Terraform
+- [x] Phase 19 — Terraform
 - [ ] Phase 20 — Documentation

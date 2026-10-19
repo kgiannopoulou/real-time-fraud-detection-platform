@@ -9,6 +9,7 @@ directory, so every Airflow task is independently retryable and inspectable:
     python -m ml.retrain train           --run-dir RUN
     python -m ml.retrain evaluate        --run-dir RUN
     python -m ml.retrain promote         --run-dir RUN
+    python -m ml.retrain pipeline        --run-dir RUN   # all of the above in one process
 
 Label feed: in production the newest labels come from chargebacks and analyst
 decisions with a delay of days to weeks. Here that feed is **simulated** — the
@@ -225,7 +226,9 @@ def promote(run_dir: Path, tracking_uri: str | None) -> None:
 
 def main(argv: list[str] | None = None) -> None:
     parser = argparse.ArgumentParser(description="Retraining pipeline steps")
-    parser.add_argument("step", choices=["validate", "extract", "features", "train", "evaluate", "promote"])
+    parser.add_argument(
+        "step", choices=["validate", "extract", "features", "train", "evaluate", "promote", "pipeline"]
+    )
     parser.add_argument("--run-dir", type=Path, required=True)
     parser.add_argument("--base", type=Path, default=Path(os.getenv("BASE_DATASET", str(SYNTHETIC_PATH))))
     parser.add_argument("--feed-days", type=float, default=1.0)
@@ -233,7 +236,19 @@ def main(argv: list[str] | None = None) -> None:
     args = parser.parse_args(argv)
     args.run_dir.mkdir(parents=True, exist_ok=True)
 
-    if args.step == "validate":
+    if args.step == "pipeline":  # every step in one process (scheduled container, no Airflow)
+        if not args.base.exists():
+            from ml.dataset import main as build_dataset
+
+            build_dataset(["--out", str(args.base)])
+        validate(args.run_dir, args.base, args.feed_days)
+        extract(args.run_dir, args.base, args.feed_days)
+        features(args.run_dir)
+        train(args.run_dir, args.tracking_uri)
+        evaluate_models(args.run_dir, args.tracking_uri)
+        if _read(args.run_dir, "evaluation.json")["promote"]:
+            promote(args.run_dir, args.tracking_uri)
+    elif args.step == "validate":
         validate(args.run_dir, args.base, args.feed_days)
     elif args.step == "extract":
         extract(args.run_dir, args.base, args.feed_days)

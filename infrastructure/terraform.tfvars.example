@@ -1,0 +1,11 @@
+project           = "fraud-platform"
+environment       = "dev"
+aws_region        = "eu-central-1"
+az_count          = 2
+msk_instance_type = "kafka.t3.small"
+db_instance_class = "db.t4g.micro"
+db_multi_az       = false
+image_tag         = "1.0.0"
+api_desired_count = 2
+# Restrict the load balancer to your own IP range:
+allowed_ingress_cidrs = ["203.0.113.0/24"]
