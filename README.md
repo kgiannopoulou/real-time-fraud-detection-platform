@@ -56,6 +56,20 @@ components load whichever registry version carries the `champion` alias.
 
 ![MLflow experiment runs](docs/images/mlflow_runs.png)
 
+### Kafka ingestion
+
+```bash
+docker compose up -d kafka kafka-init                # KRaft broker on localhost:9094 + topics
+python producer/consumer.py                          # terminal B: received transaction tx_...
+python producer/producer.py --rate 20                # terminal A: produced transaction tx_...
+```
+
+Topics: `transactions` (6 partitions, keyed by `user_id` so each card's events
+stay ordered) and `fraud_predictions`. The event contract is
+[schemas/transaction.v1.json](schemas/transaction.v1.json); messages carry a
+`schema_version` header. The producer uses `acks=all` with idempotence, so
+broker retries never create duplicates.
+
 See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
 [docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
@@ -79,7 +93,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 1 — Transaction generator and dataset
 - [x] Phase 2 — Baseline fraud model
 - [x] Phase 3 — MLflow tracking and registry
-- [ ] Phase 4 — Kafka ingestion
+- [x] Phase 4 — Kafka ingestion
 - [ ] Phase 5 — Spark Structured Streaming
 - [ ] Phase 6 — Behavioural streaming features
 - [ ] Phase 7 — Event time and watermarking

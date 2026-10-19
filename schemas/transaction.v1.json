@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kgiannopoulou/real-time-fraud-detection-platform/schemas/transaction.v1.json",
+  "title": "Card transaction event (v1)",
+  "description": "Payload of the `transactions` Kafka topic. Messages are keyed by user_id and carry a `schema_version: 1` header.",
+  "type": "object",
+  "required": ["transaction_id", "timestamp", "user_id", "merchant_id", "merchant_category", "amount", "currency", "country", "device_id"],
+  "additionalProperties": false,
+  "properties": {
+    "transaction_id": {"type": "string", "pattern": "^tx_[0-9a-f]+$"},
+    "timestamp": {"type": "string", "format": "date-time", "description": "Event time (UTC, ISO-8601) — when the card was used, not when the event was received."},
+    "user_id": {"type": "string"},
+    "merchant_id": {"type": "string"},
+    "merchant_category": {"type": "string"},
+    "amount": {"type": "number", "exclusiveMinimum": 0},
+    "currency": {"type": "string", "enum": ["EUR", "USD", "GBP", "CHF"]},
+    "country": {"type": "string", "pattern": "^[A-Z]{2}$"},
+    "device_id": {"type": "string"}
+  }
+}
