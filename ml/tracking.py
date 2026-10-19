@@ -23,10 +23,9 @@ from sklearn.metrics import PrecisionRecallDisplay  # noqa: E402
 from ml.evaluate import Metrics  # noqa: E402
 from ml.feature_pipeline import TARGET  # noqa: E402
 from ml.predict import save_artifacts  # noqa: E402
+from ml.registry import CHAMPION, MODEL_NAME  # noqa: E402
 
 EXPERIMENT = "fraud-detection"
-MODEL_NAME = "fraud-detector"
-CHAMPION = "champion"
 
 
 class Tracker:
@@ -111,16 +110,3 @@ class Tracker:
 def _metric_dict(m: Metrics, prefix: str = "") -> dict[str, float]:
     keys = ("roc_auc", "pr_auc", "precision", "recall", "f1", "threshold")
     return {f"{prefix}{k}": float(getattr(m, k)) for k in keys}
-
-
-def download_champion(tracking_uri: str, destination: Path | str, alias: str = CHAMPION) -> Path:
-    """Download the serving artefacts of the aliased model version."""
-    mlflow.set_tracking_uri(tracking_uri)
-    client = MlflowClient()
-    version = client.get_model_version_by_alias(MODEL_NAME, alias)
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    path = mlflow.artifacts.download_artifacts(
-        run_id=version.run_id, artifact_path="serving", dst_path=str(destination)
-    )
-    return Path(path)

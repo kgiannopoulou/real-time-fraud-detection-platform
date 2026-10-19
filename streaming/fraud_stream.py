@@ -6,27 +6,29 @@ Queries started by this job:
 
 * ``lake``  — every valid, enriched transaction appended to the Parquet data
   lake, partitioned by event date (the history used for analytics/retraining);
-* ``features`` — per-user behavioural features computed with
+* ``scoring`` — per-user behavioural features computed with
   ``applyInPandasWithState`` (one ``UserState`` per card in the state store),
-  appended to the lake;
+  scored by the champion model and published to ``fraud_predictions`` (plus
+  the lake) from ``foreachBatch``;
 * ``window_stats`` — per-minute event-time statistics with a watermark;
 * ``late_events`` — events that arrived later than the allowed lateness
-  (side output for reconciliation instead of a silent drop);
-* ``suspicious`` — console view of transactions with extreme behavioural
-  signals (amount far above the user's average, bursts of transactions).
+  (side output for reconciliation instead of a silent drop).
 """
 
 from __future__ import annotations
 
 import os
+import time
 from dataclasses import dataclass, field
 
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql import functions as F
 from pyspark.sql.streaming.state import GroupStateTimeout
 
+from ml.feature_pipeline import FEATURES
 from producer.transaction_generator import FX_TO_EUR
 from streaming.schemas import event_time, parse_value, validation_errors
+from streaming.scoring import ModelBroadcaster, latency_summary, model_settings, score
 from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compute_user_features
 
 
@@ -34,13 +36,16 @@ from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compu
 class StreamConfig:
     bootstrap: str = field(default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"))
     transactions_topic: str = field(default_factory=lambda: os.getenv("TRANSACTIONS_TOPIC", "transactions"))
+    predictions_topic: str = field(
+        default_factory=lambda: os.getenv("FRAUD_PREDICTIONS_TOPIC", "fraud_predictions")
+    )
     starting_offsets: str = field(default_factory=lambda: os.getenv("STARTING_OFFSETS", "latest"))
     max_offsets_per_trigger: int = field(
         default_factory=lambda: int(os.getenv("MAX_OFFSETS_PER_TRIGGER", "20000"))
     )
     lake_path: str = field(default_factory=lambda: os.getenv("LAKE_PATH", "/data/lake"))
     checkpoint_root: str = field(default_factory=lambda: os.getenv("CHECKPOINT_ROOT", "/data/checkpoints"))
-    trigger: str = field(default_factory=lambda: os.getenv("TRIGGER_INTERVAL", "5 seconds"))
+    trigger: str = field(default_factory=lambda: os.getenv("TRIGGER_INTERVAL", "2 seconds"))
     lake_trigger: str = field(default_factory=lambda: os.getenv("LAKE_TRIGGER_INTERVAL", "30 seconds"))
     # How far behind the newest event time an event may arrive and still be
     # processed by the stateful operators (and how long windows stay open).
@@ -154,49 +159,74 @@ def user_features(transactions: DataFrame, cfg: StreamConfig) -> DataFrame:
     )
 
 
-def start_feature_sinks(features: DataFrame, cfg: StreamConfig):
-    lake = (
-        features.withColumn("event_date", F.to_date("event_time"))
-        .writeStream.queryName("features")
-        .format("parquet")
-        .option("path", f"{cfg.lake_path}/features")
-        .option("checkpointLocation", cfg.checkpoint("features"))
-        .partitionBy("event_date")
-        .trigger(processingTime=cfg.lake_trigger)
-        .outputMode("append")
-        .start()
+PREDICTION_FIELDS = [
+    "transaction_id",
+    "user_id",
+    "merchant_id",
+    "merchant_category",
+    "amount",
+    "currency",
+    "amount_eur",
+    "country",
+    "device_id",
+    "event_time",
+    "fraud_probability",
+    "prediction",
+    "model_version",
+    "scored_at",
+]
+
+
+def prediction_records(scored: DataFrame) -> DataFrame:
+    """Kafka records for ``fraud_predictions``: keyed by user, JSON value."""
+    features = F.struct(*[F.col(name) for name in FEATURES]).alias("features")
+    return scored.select(
+        F.col("user_id").alias("key"),
+        F.to_json(F.struct(*PREDICTION_FIELDS, features)).alias("value"),
     )
-    suspicious = (
-        features.filter(
-            (F.col("tx_count_24h") > 0)  # ignore cold-start cards
-            & (
-                (F.col("amount_ratio") > 5)
-                | (F.col("tx_count_2m") >= 3)
-                | (F.col("is_new_country") == 1)
-                | (F.col("is_new_device") == 1)
+
+
+def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
+    def process(batch: DataFrame, batch_id: int) -> None:
+        broadcaster.refresh()  # pick up a newly promoted champion
+        started = time.perf_counter()
+        scored = score(batch, broadcaster).persist()
+        try:
+            n = scored.count()
+            if n == 0:
+                return
+            (
+                prediction_records(scored)
+                .write.format("kafka")
+                .option("kafka.bootstrap.servers", cfg.bootstrap)
+                .option("topic", cfg.predictions_topic)
+                .save()
             )
-        )
-        .select(
-            "event_time",
-            "user_id",
-            "amount_eur",
-            "merchant_category",
-            "country",
-            F.round("amount_ratio", 1).alias("amount_ratio"),
-            "tx_count_2m",
-            "tx_count_1h",
-            "is_new_country",
-            "is_new_device",
-        )
-        .writeStream.queryName("suspicious")
-        .format("console")
-        .option("truncate", "false")
-        .option("checkpointLocation", cfg.checkpoint("suspicious"))
+            # Overwriting a batch-specific directory makes the lake write
+            # idempotent when Spark replays a batch after a failure.
+            scored.write.mode("overwrite").parquet(f"{cfg.lake_path}/predictions/batch_id={batch_id:08d}")
+            summary = scored.select("kafka_timestamp", "scored_at", "prediction").toPandas()
+            frauds = int((summary["prediction"] == "FRAUD").sum())
+            latency = latency_summary(summary)
+            print(
+                f"[batch {batch_id}] scored={n} fraud={frauds} model=v{broadcaster.version} "
+                f"e2e_p95={latency.get('p95_ms', 0):.0f}ms took={time.perf_counter() - started:.2f}s",
+                flush=True,
+            )
+        finally:
+            scored.unpersist()
+
+    return process
+
+
+def start_scoring(features: DataFrame, cfg: StreamConfig, broadcaster: ModelBroadcaster):
+    return (
+        features.writeStream.queryName("scoring")
+        .foreachBatch(make_batch_processor(cfg, broadcaster))
+        .option("checkpointLocation", cfg.checkpoint("scoring"))
         .trigger(processingTime=cfg.trigger)
-        .outputMode("append")
         .start()
     )
-    return lake, suspicious
 
 
 def window_stats(transactions: DataFrame, cfg: StreamConfig) -> DataFrame:
@@ -254,7 +284,8 @@ def main() -> None:
     on_time, too_late = split_by_lateness(transactions, cfg)
 
     start_lake_sink(transactions, cfg)
-    start_feature_sinks(user_features(on_time, cfg), cfg)
+    broadcaster = ModelBroadcaster(spark, **model_settings())
+    start_scoring(user_features(on_time, cfg), cfg, broadcaster)
     start_window_stats(window_stats(on_time, cfg), cfg)
     start_late_sink(too_late, cfg)
     print(f"[fraud-stream] consuming {cfg.transactions_topic} @ {cfg.bootstrap}", flush=True)

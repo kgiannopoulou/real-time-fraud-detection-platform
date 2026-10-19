@@ -36,9 +36,14 @@ class FraudModel:
     @classmethod
     def load(cls, directory: Path | str = ARTIFACT_DIR) -> FraudModel:
         directory = Path(directory)
-        spec = json.loads((directory / SPEC_FILE).read_text())
+        return cls.from_bytes((directory / MODEL_FILE).read_bytes(), (directory / SPEC_FILE).read_text())
+
+    @classmethod
+    def from_bytes(cls, model_bytes: bytes, spec_json: str) -> FraudModel:
+        """Build from raw artefacts (e.g. a Spark broadcast variable)."""
+        spec = json.loads(spec_json)
         booster = xgb.Booster()
-        booster.load_model(str(directory / MODEL_FILE))
+        booster.load_model(bytearray(model_bytes))
         return cls(
             booster=booster,
             features=spec["features"],
@@ -77,7 +82,7 @@ def load_serving_model(
     """
     if tracking_uri:
         try:
-            from ml.tracking import download_champion
+            from ml.registry import download_champion
 
             cache = Path(tempfile.gettempdir()) / "fraud-model" / alias
             return FraudModel.load(download_champion(tracking_uri, cache, alias))

@@ -56,8 +56,13 @@ services:
     depends_on:
       kafka-init:
         condition: service_completed_successfully
+      mlflow:
+        condition: service_healthy
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MODEL_ALIAS: champion
+      MODEL_REFRESH_SECONDS: 60
       STARTING_OFFSETS: latest
       LAKE_PATH: /data/lake
       CHECKPOINT_ROOT: /data/checkpoints
@@ -66,6 +71,7 @@ services:
     volumes:
       - ./data/lake:/data/lake
       - spark-checkpoints:/data/checkpoints
+      - ./ml/artifacts:/app/ml/artifacts:ro   # fallback model when the registry is unreachable
     restart: unless-stopped
 
   # Experiment tracking + model registry. SQLite metadata and artefacts live
