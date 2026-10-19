@@ -390,7 +390,8 @@ def ml() -> dict:
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     for name, board in (("platform.json", platform()), ("ml.json", ml())):
-        (OUT / name).write_text(json.dumps(board, indent=2, ensure_ascii=False) + "\n", encoding="utf-8")
+        text = json.dumps(board, indent=2, ensure_ascii=False) + "\n"
+        (OUT / name).write_text(text, encoding="utf-8", newline="\n")
         print(f"wrote {OUT / name}")
 
 

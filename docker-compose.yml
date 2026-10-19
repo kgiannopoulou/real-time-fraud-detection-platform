@@ -1,4 +1,11 @@
-# Local platform. Services are added phase by phase; see README "Roadmap".
+# Local platform:  docker compose up -d --build
+#
+#   Kafka (KRaft) ─► Spark Structured Streaming ─► PostgreSQL ─► API / Dashboard
+#   MLflow (tracking + registry) · Airflow (retraining) · Prometheus + Grafana
+#
+# Start streaming test traffic with either
+#   python producer/producer.py --rate 30            (from the host), or
+#   docker compose --profile demo up -d producer     (inside the stack).
 name: fraud-platform
 
 x-kafka-image: &kafka-image apache/kafka:3.9.1
@@ -26,6 +33,7 @@ services:
       KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
       KAFKA_AUTO_CREATE_TOPICS_ENABLE: "false"
       KAFKA_LOG_RETENTION_HOURS: 24
+      KAFKA_HEAP_OPTS: "-Xms256m -Xmx512m"
     volumes:
       - kafka-data:/var/lib/kafka/data
     healthcheck:
@@ -78,6 +86,8 @@ services:
         condition: service_healthy
       postgres:
         condition: service_healthy
+      model-bootstrap:
+        condition: service_completed_successfully
     environment:
       KAFKA_BOOTSTRAP_SERVERS: kafka:9092
       POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
@@ -91,9 +101,15 @@ services:
       - "4040:4040"   # Spark UI (+ JVM metrics at /metrics/prometheus)
       - "9108:9108"   # application metrics
     volumes:
-      - ./data/lake:/data/lake
-      - spark-checkpoints:/data/checkpoints
+      # Lake and checkpoints share one volume so they can never get out of sync.
+      - spark-data:/data
       - ./ml/artifacts:/app/ml/artifacts:ro   # fallback model when the registry is unreachable
+    healthcheck:
+      test: ["CMD", "curl", "-fs", "http://localhost:9108/metrics"]
+      interval: 15s
+      timeout: 5s
+      retries: 20
+      start_period: 60s
     restart: unless-stopped
 
   # Online scoring + read API over the serving store.
@@ -107,6 +123,8 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_healthy
+      model-bootstrap:
+        condition: service_completed_successfully
     environment:
       POSTGRES_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
       MLFLOW_TRACKING_URI: http://mlflow:5000
@@ -142,6 +160,8 @@ services:
         condition: service_healthy
       mlflow:
         condition: service_healthy
+      model-bootstrap:
+        condition: service_completed_successfully
     environment:
       AIRFLOW_ADMIN_DSN: postgresql://fraud:fraud_local_pw@postgres:5432/fraud
       AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://fraud:fraud_local_pw@postgres:5432/airflow
@@ -159,7 +179,7 @@ services:
       - "8080:8080"
     volumes:
       - ./airflow/dags:/opt/airflow/dags:ro
-      - ./data:/opt/fraud/data
+      - ml-data:/opt/fraud/data
     healthcheck:
       test: ["CMD", "curl", "-fs", "http://localhost:8080/health"]
       interval: 15s
@@ -209,6 +229,43 @@ services:
         condition: service_healthy
     restart: unless-stopped
 
+  # One-shot: trains + registers a first champion model if the registry is
+  # empty (fresh checkout). Reuses the Airflow image's isolated ML virtualenv.
+  model-bootstrap:
+    image: fraud-platform/airflow:latest
+    build:
+      context: .
+      dockerfile: airflow/Dockerfile
+    entrypoint: ["/opt/ml-venv/bin/python", "-m", "ml.bootstrap"]
+    working_dir: /opt/fraud
+    depends_on:
+      mlflow:
+        condition: service_healthy
+    environment:
+      MLFLOW_TRACKING_URI: http://mlflow:5000
+      MLFLOW_DISABLE_AGENT_HINT: 1
+    volumes:
+      - ml-data:/opt/fraud/data
+    restart: "no"
+
+  # Synthetic traffic inside the stack (opt-in: --profile demo).
+  producer:
+    profiles: [demo]
+    build:
+      context: .
+      dockerfile: producer/Dockerfile
+    image: fraud-platform/producer:latest
+    depends_on:
+      kafka-init:
+        condition: service_completed_successfully
+      spark:
+        condition: service_healthy
+    environment:
+      KAFKA_BOOTSTRAP_SERVERS: kafka:9092
+    command: ["--rate", "${GENERATOR_RATE:-20}", "--quiet", "--metrics-port", "8001",
+              "--late-rate", "0.02", "--duplicate-rate", "0.005", "--invalid-rate", "0.005"]
+    restart: unless-stopped
+
   # Experiment tracking + model registry. SQLite metadata and artefacts live
   # in a named volume; artefacts are proxied through the server (--serve-artifacts)
   # so clients only need the tracking URI.
@@ -234,7 +291,8 @@ services:
 volumes:
   kafka-data:
   postgres-data:
-  spark-checkpoints:
+  spark-data:
+  ml-data:
   mlflow-data:
   prometheus-data:
   grafana-data:

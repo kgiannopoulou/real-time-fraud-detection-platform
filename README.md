@@ -25,7 +25,31 @@ Transaction producer ─► Kafka (transactions) ─► Spark Structured Streami
 Airflow ► retraining · MLflow ► experiments + registry · Prometheus/Grafana ► monitoring
 ```
 
-## Quickstart
+## Run the whole platform
+
+```bash
+docker compose up -d --build          # ~5 min on first build; trains a first model if the registry is empty
+python producer/producer.py --rate 30 # or: docker compose --profile demo up -d producer
+python scripts/smoke_test.py          # health checks + end-to-end verification
+```
+
+| Service | URL | Notes |
+| --- | --- | --- |
+| Fraud dashboard (Streamlit) | http://localhost:8501 | live monitor, alerts, data quality |
+| Prediction API (FastAPI) | http://localhost:8000/docs | `POST /predict`, alerts, stats |
+| Grafana | http://localhost:3001 | streaming + model/drift dashboards (admin / admin) |
+| Prometheus | http://localhost:9090 | metrics and alert rules |
+| MLflow | http://localhost:5000 | experiments + model registry |
+| Airflow | http://localhost:8080 | retraining DAG (admin / admin) |
+| Spark UI | http://localhost:4040 | structured streaming queries |
+| Kafka | localhost:9094 | topics `transactions`, `fraud_predictions`, `fraud_alerts`, `dead_letter_transactions` |
+| PostgreSQL | localhost:5436 | db/user `fraud` |
+
+On a fresh checkout `model-bootstrap` generates the labelled dataset, trains
+XGBoost and registers it as the `champion` before Spark and the API start.
+Credentials are local-development defaults.
+
+## Develop locally
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -245,7 +269,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 12 — Airflow retraining
 - [x] Phase 13 — Data quality and dead-letter queue
 - [x] Phase 14 — Monitoring (Prometheus/Grafana)
-- [ ] Phase 15 — Full Docker Compose stack
+- [x] Phase 15 — Full Docker Compose stack
 - [ ] Phase 16 — Tests
 - [ ] Phase 17 — CI/CD
 - [ ] Phase 18 — Cloud deployment
