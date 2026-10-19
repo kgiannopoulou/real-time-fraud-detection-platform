@@ -34,9 +34,13 @@ pip install -r requirements-dev.txt
 python producer/transaction_generator.py --rate 20   # continuous JSON transactions
 python -m ml.dataset                                  # labelled history -> data/raw/transactions.parquet
 python -m ml.eda                                      # summary + charts in docs/images/
+python -m ml.train                                    # compare LR / RF / XGBoost / LightGBM, save XGBoost
+python -m ml.predict                                  # score recent transactions with the saved model
+python -m ml.public_benchmark                         # same model families on the public ULB dataset
 ```
 
-See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis.
+See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
+[docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
 ## Repository layout
 
@@ -56,7 +60,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis.
 ## Roadmap
 
 - [x] Phase 1 — Transaction generator and dataset
-- [ ] Phase 2 — Baseline fraud model
+- [x] Phase 2 — Baseline fraud model
 - [ ] Phase 3 — MLflow tracking and registry
 - [ ] Phase 4 — Kafka ingestion
 - [ ] Phase 5 — Spark Structured Streaming
