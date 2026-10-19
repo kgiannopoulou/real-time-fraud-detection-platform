@@ -12,6 +12,7 @@ import math
 import os
 from collections.abc import Iterable
 from datetime import datetime, timezone
+from pathlib import Path
 
 import psycopg
 
@@ -203,3 +204,40 @@ def recent_user_transactions(conn: psycopg.Connection, user_id: str, since: date
            FROM transactions WHERE user_id = %s AND event_time >= %s ORDER BY event_time""",
         (user_id, since),
     ).fetchall()
+
+
+SCHEMA_FILE = Path(__file__).with_name("schema.sql")
+
+
+def ensure_schema(dsn: str | None = None) -> None:
+    """Apply the (idempotent, IF NOT EXISTS) schema — lets an existing database
+    pick up tables added after it was first initialised."""
+    with connect(dsn) as conn:
+        conn.execute(SCHEMA_FILE.read_text())
+
+
+INSERT_DEAD_LETTER = """
+INSERT INTO dead_letter_transactions (source_topic, kafka_partition, kafka_offset, transaction_id, reasons,
+                                      raw_value, kafka_timestamp)
+VALUES (%s, %s, %s, %s, %s, %s, %s)
+ON CONFLICT DO NOTHING
+"""
+
+
+def write_dead_letters(rows: Iterable[dict], dsn: str | None = None) -> int:
+    values = [
+        (
+            r["source_topic"],
+            r["kafka_partition"],
+            r["kafka_offset"],
+            r.get("transaction_id"),
+            json.dumps(list(r["reasons"])),
+            r.get("raw_value"),
+            _utc(r.get("kafka_timestamp")),
+        )
+        for r in rows
+    ]
+    if values:
+        with connect(dsn) as conn, conn.cursor() as cur:
+            cur.executemany(INSERT_DEAD_LETTER, values)
+    return len(values)

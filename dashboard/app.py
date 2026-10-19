@@ -281,8 +281,51 @@ def alerts_tab() -> None:
                     st.rerun()
 
 
+def quality_tab(minutes: int) -> None:
+    totals = queries.quality_totals(minutes)
+    accepted, rejected = int(totals["accepted"] or 0), int(totals["rejected"] or 0)
+    c1, c2, c3 = st.columns(3)
+    c1.metric("Accepted & scored", f"{accepted:,}")
+    c2.metric("Dead-lettered", f"{rejected:,}")
+    c3.metric("Rejection rate", f"{(rejected / (accepted + rejected) if accepted + rejected else 0):.2%}")
+    left, right = st.columns(2)
+    reasons = queries.dead_letters_by_reason(minutes)
+    if reasons.empty:
+        left.info("No rejected records in range.")
+    else:
+        reasons = reasons.iloc[::-1]
+        left.plotly_chart(
+            bar(
+                reasons["records"],
+                reasons["reason"],
+                VOLUME,
+                "Dead-letter reasons",
+                orientation="h",
+                hover="%{y}: %{x:,}<extra></extra>",
+            ),
+            width="stretch",
+        )
+    stats = queries.window_stats(minutes)
+    if not stats.empty:
+        right.plotly_chart(
+            bar(
+                stats["window_start"],
+                stats["late_arrivals"],
+                VOLUME,
+                "Late but accepted arrivals per minute (event-time windows)",
+                hover="%{x|%H:%M}: %{y:,} late<extra></extra>",
+            ),
+            width="stretch",
+        )
+    st.markdown("#### Recent dead letters")
+    dlq = queries.recent_dead_letters()
+    if not dlq.empty:
+        dlq["reasons"] = dlq["reasons"].map(lambda r: ", ".join(r) if isinstance(r, list) else r)
+        st.dataframe(dlq, hide_index=True, width="stretch", height=360)
+
+
 minutes = header()
-monitor, alerts_view = st.tabs(["Live monitor", "Alerts"])
+monitor, alerts_view, quality_view = st.tabs(["Live monitor", "Alerts", "Data quality"])
 
 with monitor:
 
@@ -302,3 +345,6 @@ with monitor:
 
 with alerts_view:
     alerts_tab()
+
+with quality_view:
+    quality_tab(minutes)

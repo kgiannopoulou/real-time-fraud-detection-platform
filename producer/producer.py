@@ -62,13 +62,20 @@ class TransactionProducer:
         else:
             self.delivered += 1
 
-    def send(self, event: dict) -> None:
-        payload = json.dumps(event, separators=(",", ":")).encode()
+    def send(self, event: dict | str) -> None:
+        """Publish one event; a ``str`` is sent verbatim (used to inject malformed JSON)."""
+        if isinstance(event, str):
+            payload, key = event.encode(), b""
+        else:
+            payload, key = (
+                json.dumps(event, separators=(",", ":")).encode(),
+                str(event.get("user_id", "")).encode(),
+            )
         while True:
             try:
                 self.producer.produce(
                     self.topic,
-                    key=str(event.get("user_id", "")).encode(),
+                    key=key,
                     value=payload,
                     headers={"schema_version": SCHEMA_VERSION},
                     on_delivery=self._on_delivery,
@@ -100,6 +107,8 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--very-late-rate", type=float, default=0.0, help="share delayed 3-5 min (beyond allowed lateness)"
     )
+    parser.add_argument("--duplicate-rate", type=float, default=0.0, help="share of events sent twice")
+    parser.add_argument("--invalid-rate", type=float, default=0.0, help="share of events corrupted")
     args = parser.parse_args(argv)
 
     chaos = ChaosInjector(
@@ -107,6 +116,8 @@ def main(argv: list[str] | None = None) -> None:
             late_rate=args.late_rate,
             max_late_seconds=args.max_late_seconds,
             very_late_rate=args.very_late_rate,
+            duplicate_rate=args.duplicate_rate,
+            invalid_rate=args.invalid_rate,
         )
     )
     gen = TransactionGenerator(seed=args.seed, config=GeneratorConfig(n_users=users_for_rate(args.rate)))
@@ -130,7 +141,8 @@ def main(argv: list[str] | None = None) -> None:
                 producer.send(event)
                 sent += 1
                 if not args.quiet:
-                    print(f"produced transaction {event['transaction_id']}")
+                    tx_id = event.get("transaction_id", "?") if isinstance(event, dict) else "<malformed>"
+                    print(f"produced transaction {tx_id}")
             if args.quiet and now - last_report >= 5:
                 print(
                     f"sent={sent:,} delivered={producer.delivered:,} failed={producer.failed} "

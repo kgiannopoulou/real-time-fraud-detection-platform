@@ -87,7 +87,7 @@ which keeps them idempotent under Spark's at-least-once `foreachBatch`.
 ### Serving store and API
 
 PostgreSQL (`localhost:5436`, schema in
-[infrastructure/postgres/init.sql](infrastructure/postgres/init.sql)) holds
+[storage/schema.sql](storage/schema.sql)) holds
 what the dashboard and API query interactively: `transactions`,
 `fraud_predictions` (score, model version, risk factors, SHAP values,
 features, latency), `fraud_alerts`, `transaction_stats_minute` and
@@ -140,6 +140,16 @@ newest data -> promote only if the candidate wins by a margin. Promotion moves
 the MLflow `champion` alias, which the stream and API hot-swap. Airflow
 orchestrates batch work only; it never sits in the streaming path. Details:
 [docs/retraining.md](docs/retraining.md).
+
+### Data quality and dead-letter queue
+
+Invalid records (malformed JSON, missing ids, non-positive or non-numeric
+amounts, unsupported currencies, invalid countries, future timestamps),
+duplicate transaction ids and events beyond the allowed lateness are routed
+to the `dead_letter_transactions` topic and table with their rejection
+reasons; the stream keeps running. The producer can inject all of them:
+`--invalid-rate 0.01 --duplicate-rate 0.01`. See
+[docs/data-quality.md](docs/data-quality.md).
 
 ### Kafka ingestion
 
@@ -217,7 +227,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 10 — PostgreSQL serving store
 - [x] Phase 11 — Fraud dashboard
 - [x] Phase 12 — Airflow retraining
-- [ ] Phase 13 — Data quality and dead-letter queue
+- [x] Phase 13 — Data quality and dead-letter queue
 - [ ] Phase 14 — Monitoring (Prometheus/Grafana)
 - [ ] Phase 15 — Full Docker Compose stack
 - [ ] Phase 16 — Tests

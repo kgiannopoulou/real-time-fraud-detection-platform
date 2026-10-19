@@ -18,6 +18,7 @@ from pyspark.sql.types import (
     BooleanType,
     DoubleType,
     IntegerType,
+    LongType,
     StringType,
     StructField,
     StructType,
@@ -41,6 +42,8 @@ PASSTHROUGH_FIELDS = [
     StructField("device_id", StringType()),
     StructField("event_time", TimestampType()),
     StructField("kafka_timestamp", TimestampType()),
+    StructField("kafka_partition", IntegerType()),
+    StructField("kafka_offset", LongType()),
     StructField("amount_eur", DoubleType()),
     StructField("hour_of_day", IntegerType()),
 ]

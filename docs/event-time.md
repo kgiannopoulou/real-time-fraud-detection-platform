@@ -27,7 +27,7 @@ limiting streaming state growth.**
 | `withWatermark("event_time", "2 minutes")` | stateful operator and window aggregation | Spark tracks `max(event_time) - 2 min`; events older than that are not admitted into state |
 | Event-time state timeout (`GroupStateTimeout.EventTimeTimeout`) | `streaming/stateful.py` | A user's state is evicted once the watermark passes last activity + 24 h, so state does not grow forever |
 | 1-minute tumbling windows in append mode | `window_stats` | A window is emitted exactly once, when the watermark passes its end — late events inside the allowed lateness still land in the right minute |
-| Lateness side output | `split_by_lateness` -> `data/lake/late_events` | Events that arrive more than 120 s after their event time are routed aside for reconciliation instead of being silently dropped |
+| Lateness side output | `split_by_lateness` -> dead-letter queue | Events that arrive more than 120 s after their event time are routed to `dead_letter_transactions` (reason `arrived_after_allowed_lateness`) for reconciliation instead of being silently dropped |
 
 ### The trade-off
 
@@ -56,5 +56,5 @@ docker compose logs -f spark | grep -A4 window_start
 ```
 
 `late_arrivals` in each window counts events that arrived after their
-timestamp but were still accepted; `data/lake/late_events` collects the ones
+timestamp but were still accepted; the dead-letter queue collects the ones
 that exceeded the allowed lateness.

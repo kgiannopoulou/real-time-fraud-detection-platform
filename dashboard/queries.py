@@ -106,3 +106,44 @@ def alerts(status: str, limit: int = 100) -> pd.DataFrame:
 def set_alert_status(alert_id: int, status: str) -> None:
     with psycopg.connect(dsn_from_env()) as conn:
         conn.execute("UPDATE fraud_alerts SET status = %s WHERE alert_id = %s", (status, alert_id))
+
+
+def dead_letters_by_reason(minutes: int) -> pd.DataFrame:
+    return _frame(
+        """SELECT reason, count(*) AS records
+           FROM dead_letter_transactions, jsonb_array_elements_text(reasons) AS reason
+           WHERE quarantined_at >= now() - make_interval(mins => %s)
+           GROUP BY 1 ORDER BY 2 DESC""",
+        (minutes,),
+    )
+
+
+def recent_dead_letters(limit: int = 50) -> pd.DataFrame:
+    return _frame(
+        """SELECT quarantined_at, transaction_id, reasons, kafka_partition, kafka_offset, raw_value
+           FROM dead_letter_transactions ORDER BY quarantined_at DESC LIMIT %s""",
+        (limit,),
+    )
+
+
+def window_stats(minutes: int) -> pd.DataFrame:
+    return _frame(
+        """SELECT window_start, transactions, late_arrivals, avg_arrival_delay_s
+           FROM transaction_stats_minute WHERE window_start >= now() - make_interval(mins => %s)
+           ORDER BY window_start""",
+        (minutes,),
+    )
+
+
+def quality_totals(minutes: int) -> dict:
+    return (
+        _frame(
+            """SELECT (SELECT count(*) FROM fraud_predictions
+                   WHERE scored_at >= now() - make_interval(mins => %s)) AS accepted,
+                  (SELECT count(*) FROM dead_letter_transactions
+                   WHERE quarantined_at >= now() - make_interval(mins => %s)) AS rejected""",
+            (minutes, minutes),
+        )
+        .iloc[0]
+        .to_dict()
+    )

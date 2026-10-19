@@ -12,8 +12,11 @@ Queries started by this job:
   (``fraud_predictions``, ``fraud_alerts``), PostgreSQL and the lake;
 * ``window_stats`` — per-minute event-time statistics with a watermark,
   upserted into PostgreSQL;
-* ``late_events`` — events that arrived later than the allowed lateness
-  (side output for reconciliation instead of a silent drop).
+* ``dead_letters`` — the dead-letter queue: records that failed validation
+  and events that arrived later than the allowed lateness (plus duplicates
+  detected in the stateful stage) go to the ``dead_letter_transactions``
+  topic and table with their rejection reasons, instead of crashing the job
+  or vanishing silently.
 """
 
 from __future__ import annotations
@@ -28,8 +31,14 @@ from pyspark.sql.streaming.state import GroupStateTimeout
 
 from ml.feature_pipeline import FEATURES
 from producer.transaction_generator import FX_TO_EUR
-from storage.postgres import record_model, spark_partition_writer, write_window_stats
-from streaming.schemas import event_time, parse_value, validation_errors
+from storage.postgres import (
+    ensure_schema,
+    record_model,
+    spark_partition_writer,
+    write_dead_letters,
+    write_window_stats,
+)
+from streaming.schemas import TRANSACTION_SCHEMA, event_time, parse_value, validation_errors
 from streaming.scoring import ModelBroadcaster, latency_summary, model_settings, score
 from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compute_user_features
 
@@ -38,6 +47,9 @@ from streaming.stateful import FEATURES_SCHEMA, PASSTHROUGH, STATE_SCHEMA, compu
 class StreamConfig:
     bootstrap: str = field(default_factory=lambda: os.getenv("KAFKA_BOOTSTRAP_SERVERS", "kafka:9092"))
     transactions_topic: str = field(default_factory=lambda: os.getenv("TRANSACTIONS_TOPIC", "transactions"))
+    dead_letter_topic: str = field(
+        default_factory=lambda: os.getenv("DEAD_LETTER_TOPIC", "dead_letter_transactions")
+    )
     alerts_topic: str = field(default_factory=lambda: os.getenv("FRAUD_ALERTS_TOPIC", "fraud_alerts"))
     postgres_dsn: str = field(
         default_factory=lambda: os.getenv(
@@ -115,7 +127,7 @@ def enrich(parsed: DataFrame) -> DataFrame:
     """Flatten valid records and add derived columns."""
     return (
         parsed.filter("is_valid")
-        .select("tx.*", "kafka_timestamp")
+        .select("tx.*", "kafka_timestamp", "kafka_partition", "kafka_offset")
         .withColumn("event_time", event_time(F.col("timestamp")))
         .withColumn("amount_eur", F.round(F.col("amount") * fx_rate(F.col("currency")), 2))
         .withColumn("hour_of_day", F.hour("event_time"))
@@ -195,30 +207,44 @@ def prediction_records(scored: DataFrame) -> DataFrame:
     )
 
 
+def duplicate_records(batch: DataFrame, cfg: StreamConfig) -> DataFrame:
+    """Duplicates detected by the stateful stage, in dead-letter shape."""
+    return batch.filter("is_duplicate").select(
+        F.lit(cfg.transactions_topic).alias("source_topic"),
+        "kafka_partition",
+        "kafka_offset",
+        "transaction_id",
+        F.array(F.lit("duplicate_transaction_id")).alias("reasons"),
+        F.to_json(
+            F.struct(
+                *[c for c in TRANSACTION_SCHEMA.fieldNames() if c != "timestamp"],
+                F.col("event_time").alias("timestamp"),
+            )
+        ).alias("raw_value"),
+        "kafka_timestamp",
+    )
+
+
 def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
     def process(batch: DataFrame, batch_id: int) -> None:
         broadcaster.refresh()  # pick up a newly promoted champion
         started = time.perf_counter()
+        # Persist once: every action below would otherwise re-run the stateful stage.
+        batch = batch.persist()
         scored = score(batch, broadcaster).persist()
         try:
+            duplicates = duplicate_records(batch, cfg)
+            if not duplicates.isEmpty():
+                publish_dead_letters(duplicates, cfg)
             n = scored.count()
             if n == 0:
                 return
-            (
-                prediction_records(scored)
-                .write.format("kafka")
-                .option("kafka.bootstrap.servers", cfg.bootstrap)
-                .option("topic", cfg.predictions_topic)
-                .save()
-            )
-            alerts = scored.filter(F.col("prediction") == "FRAUD")
-            (
-                prediction_records(alerts)
-                .write.format("kafka")
-                .option("kafka.bootstrap.servers", cfg.bootstrap)
-                .option("topic", cfg.alerts_topic)
-                .save()
-            )
+            # One Kafka write: every prediction, plus a copy of frauds on the alerts topic.
+            records = prediction_records(scored).withColumn("topic", F.lit(cfg.predictions_topic))
+            alerts = prediction_records(scored.filter(F.col("prediction") == "FRAUD"))
+            records.unionByName(alerts.withColumn("topic", F.lit(cfg.alerts_topic))).write.format(
+                "kafka"
+            ).option("kafka.bootstrap.servers", cfg.bootstrap).save()
             # Serving store for the API/dashboard (idempotent upserts).
             scored.foreachPartition(spark_partition_writer(FEATURES, cfg.postgres_dsn))
             # Overwriting a batch-specific directory makes the lake write
@@ -234,6 +260,7 @@ def make_batch_processor(cfg: StreamConfig, broadcaster: ModelBroadcaster):
             )
         finally:
             scored.unpersist()
+            batch.unpersist()
 
     return process
 
@@ -281,15 +308,52 @@ def start_window_stats(stats: DataFrame, cfg: StreamConfig):
     )
 
 
-def start_late_sink(late: DataFrame, cfg: StreamConfig):
+def dead_letters(parsed: DataFrame, too_late: DataFrame, cfg: StreamConfig) -> DataFrame:
+    """Invalid records plus events beyond the allowed lateness, in DLQ shape."""
+    invalid = parsed.filter(~F.col("is_valid")).select(
+        F.lit(cfg.transactions_topic).alias("source_topic"),
+        "kafka_partition",
+        "kafka_offset",
+        F.col("tx.transaction_id").alias("transaction_id"),
+        F.col("errors").alias("reasons"),
+        "raw_value",
+        "kafka_timestamp",
+    )
+    late = too_late.select(
+        F.lit(cfg.transactions_topic).alias("source_topic"),
+        "kafka_partition",
+        "kafka_offset",
+        "transaction_id",
+        F.array(F.lit("arrived_after_allowed_lateness")).alias("reasons"),
+        F.to_json(F.struct(*TRANSACTION_SCHEMA.fieldNames())).alias("raw_value"),
+        "kafka_timestamp",
+    )
+    return invalid.unionByName(late)
+
+
+def publish_dead_letters(records: DataFrame, cfg: StreamConfig) -> None:
+    """Write DLQ records to Kafka (for replay tooling) and PostgreSQL (for triage)."""
+    payload = F.to_json(F.struct(*records.columns, F.current_timestamp().alias("quarantined_at")))
+    (
+        records.select(F.col("transaction_id").alias("key"), payload.alias("value"))
+        .write.format("kafka")
+        .option("kafka.bootstrap.servers", cfg.bootstrap)
+        .option("topic", cfg.dead_letter_topic)
+        .save()
+    )
+    write_dead_letters([row.asDict() for row in records.collect()], cfg.postgres_dsn)
+
+
+def start_dead_letter_sink(records: DataFrame, cfg: StreamConfig):
+    def process(batch: DataFrame, batch_id: int) -> None:
+        if not batch.isEmpty():
+            publish_dead_letters(batch, cfg)
+
     return (
-        late.writeStream.queryName("late_events")
-        .format("parquet")
-        .option("path", f"{cfg.lake_path}/late_events")
-        .option("checkpointLocation", cfg.checkpoint("late_events"))
-        .partitionBy("event_date")
-        .trigger(processingTime=cfg.lake_trigger)
-        .outputMode("append")
+        records.writeStream.queryName("dead_letters")
+        .foreachBatch(process)
+        .option("checkpointLocation", cfg.checkpoint("dead_letters"))
+        .trigger(processingTime=cfg.trigger)
         .start()
     )
 
@@ -298,6 +362,7 @@ def main() -> None:
     cfg = StreamConfig()
     spark = build_spark()
     spark.sparkContext.setLogLevel(os.getenv("SPARK_LOG_LEVEL", "WARN"))
+    ensure_schema(cfg.postgres_dsn)
 
     parsed = parse(read_transactions(spark, cfg))
     transactions = enrich(parsed)
@@ -310,7 +375,7 @@ def main() -> None:
     )
     start_scoring(user_features(on_time, cfg), cfg, broadcaster)
     start_window_stats(window_stats(on_time, cfg), cfg)
-    start_late_sink(too_late, cfg)
+    start_dead_letter_sink(dead_letters(parsed, too_late, cfg), cfg)
     print(f"[fraud-stream] consuming {cfg.transactions_topic} @ {cfg.bootstrap}", flush=True)
     spark.streams.awaitAnyTermination()
 

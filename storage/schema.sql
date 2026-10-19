@@ -71,3 +71,20 @@ CREATE TABLE IF NOT EXISTS model_metadata (
     first_served_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     last_served_at   TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+-- Records rejected by the streaming job: invalid payloads, duplicates and
+-- events beyond the allowed lateness. Keyed by Kafka coordinates so a
+-- replayed micro-batch cannot insert the same record twice.
+CREATE TABLE IF NOT EXISTS dead_letter_transactions (
+    id               BIGSERIAL PRIMARY KEY,
+    source_topic     TEXT        NOT NULL,
+    kafka_partition  INTEGER     NOT NULL,
+    kafka_offset     BIGINT      NOT NULL,
+    transaction_id   TEXT,
+    reasons          JSONB       NOT NULL,
+    raw_value        TEXT,
+    kafka_timestamp  TIMESTAMPTZ,
+    quarantined_at   TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (source_topic, kafka_partition, kafka_offset, reasons)
+);
+CREATE INDEX IF NOT EXISTS dlq_time ON dead_letter_transactions (quarantined_at DESC);

@@ -5,6 +5,7 @@
 #                       stay ordered within one partition
 #   fraud_predictions   one scored record per transaction
 #   fraud_alerts        predictions above the decision threshold
+#   dead_letter_transactions  rejected records (invalid, duplicate, too late)
 set -euo pipefail
 BOOTSTRAP="${BOOTSTRAP:-kafka:9092}"
 KT=/opt/kafka/bin/kafka-topics.sh
@@ -18,5 +19,6 @@ create() {
 create transactions 6 86400000
 create fraud_predictions 3 86400000
 create fraud_alerts 1 604800000
+create dead_letter_transactions 1 604800000
 
 "$KT" --bootstrap-server "$BOOTSTRAP" --list

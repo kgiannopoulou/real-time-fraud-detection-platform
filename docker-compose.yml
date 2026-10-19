@@ -58,7 +58,7 @@ services:
       - "5436:5432"
     volumes:
       - postgres-data:/var/lib/postgresql/data
-      - ./infrastructure/postgres/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+      - ./storage/schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U fraud -d fraud"]
       interval: 5s

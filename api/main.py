@@ -32,7 +32,7 @@ from pydantic import BaseModel, Field
 from ml.feature_pipeline import add_risk_features
 from ml.predict import FraudModel, load_serving_model
 from producer.transaction_generator import FX_TO_EUR, SUPPORTED_CURRENCIES
-from storage.postgres import dsn_from_env, recent_user_transactions
+from storage.postgres import dsn_from_env, ensure_schema, recent_user_transactions
 from streaming.features import KNOWN_TTL, UserState
 
 MODEL_REFRESH_SECONDS = float(os.getenv("MODEL_REFRESH_SECONDS", "60"))
@@ -91,6 +91,7 @@ def _configure(conn) -> None:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    ensure_schema()
     app.state.pool = ConnectionPool(
         dsn_from_env(),
         min_size=1,
