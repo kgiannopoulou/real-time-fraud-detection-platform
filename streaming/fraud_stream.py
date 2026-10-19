@@ -9,6 +9,9 @@ Queries started by this job:
 * ``features`` — per-user behavioural features computed with
   ``applyInPandasWithState`` (one ``UserState`` per card in the state store),
   appended to the lake;
+* ``window_stats`` — per-minute event-time statistics with a watermark;
+* ``late_events`` — events that arrived later than the allowed lateness
+  (side output for reconciliation instead of a silent drop);
 * ``suspicious`` — console view of transactions with extreme behavioural
   signals (amount far above the user's average, bursts of transactions).
 """
@@ -39,6 +42,10 @@ class StreamConfig:
     checkpoint_root: str = field(default_factory=lambda: os.getenv("CHECKPOINT_ROOT", "/data/checkpoints"))
     trigger: str = field(default_factory=lambda: os.getenv("TRIGGER_INTERVAL", "5 seconds"))
     lake_trigger: str = field(default_factory=lambda: os.getenv("LAKE_TRIGGER_INTERVAL", "30 seconds"))
+    # How far behind the newest event time an event may arrive and still be
+    # processed by the stateful operators (and how long windows stay open).
+    watermark: str = field(default_factory=lambda: os.getenv("WATERMARK_DELAY", "2 minutes"))
+    allowed_lateness_s: int = field(default_factory=lambda: int(os.getenv("ALLOWED_LATENESS_SECONDS", "120")))
 
     def checkpoint(self, query: str) -> str:
         return f"{self.checkpoint_root}/{query}"
@@ -99,6 +106,9 @@ def enrich(parsed: DataFrame) -> DataFrame:
         .withColumn("event_time", event_time(F.col("timestamp")))
         .withColumn("amount_eur", F.round(F.col("amount") * fx_rate(F.col("currency")), 2))
         .withColumn("hour_of_day", F.hour("event_time"))
+        .withColumn(
+            "arrival_delay_s", F.col("kafka_timestamp").cast("double") - F.col("event_time").cast("double")
+        )
         .withColumn("event_date", F.to_date("event_time"))
         .withColumn("merchant_category", F.coalesce("merchant_category", F.lit("unknown")))
     )
@@ -117,17 +127,29 @@ def start_lake_sink(transactions: DataFrame, cfg: StreamConfig):
     )
 
 
-def user_features(transactions: DataFrame) -> DataFrame:
-    """Behavioural features from each user's history kept in the state store."""
+def split_by_lateness(transactions: DataFrame, cfg: StreamConfig) -> tuple[DataFrame, DataFrame]:
+    """On-time events feed the stateful path; events that arrive later than the
+    allowed lateness go to a side output instead of being silently dropped."""
+    too_late = F.col("arrival_delay_s") > cfg.allowed_lateness_s
+    return transactions.filter(~too_late), transactions.filter(too_late)
+
+
+def user_features(transactions: DataFrame, cfg: StreamConfig) -> DataFrame:
+    """Behavioural features from each user's history kept in the state store.
+
+    The watermark bounds state: per-user state expires via an event-time
+    timeout, and events older than the watermark are not admitted.
+    """
     return (
-        transactions.select(*PASSTHROUGH)
+        transactions.withWatermark("event_time", cfg.watermark)
+        .select(*PASSTHROUGH)
         .groupBy("user_id")
         .applyInPandasWithState(
             compute_user_features,
             outputStructType=FEATURES_SCHEMA,
             stateStructType=STATE_SCHEMA,
             outputMode="append",
-            timeoutConf=GroupStateTimeout.NoTimeout,
+            timeoutConf=GroupStateTimeout.EventTimeTimeout,
         )
     )
 
@@ -177,6 +199,50 @@ def start_feature_sinks(features: DataFrame, cfg: StreamConfig):
     return lake, suspicious
 
 
+def window_stats(transactions: DataFrame, cfg: StreamConfig) -> DataFrame:
+    """Per-minute event-time statistics. A window is emitted once (append mode)
+    when the watermark passes its end, so late events within the allowed
+    lateness are still counted in the right minute."""
+    return (
+        transactions.withWatermark("event_time", cfg.watermark)
+        .groupBy(F.window("event_time", "1 minute"))
+        .agg(
+            F.count("*").alias("transactions"),
+            F.round(F.sum("amount_eur"), 2).alias("amount_eur"),
+            F.approx_count_distinct("user_id").alias("active_users"),
+            F.round(F.avg("arrival_delay_s"), 3).alias("avg_arrival_delay_s"),
+            F.sum(F.when(F.col("arrival_delay_s") > 1, 1).otherwise(0)).alias("late_arrivals"),
+        )
+        .select(F.col("window.start").alias("window_start"), F.col("window.end").alias("window_end"), "*")
+        .drop("window")
+    )
+
+
+def start_window_stats(stats: DataFrame, cfg: StreamConfig):
+    return (
+        stats.writeStream.queryName("window_stats")
+        .format("console")
+        .option("truncate", "false")
+        .option("checkpointLocation", cfg.checkpoint("window_stats"))
+        .trigger(processingTime="30 seconds")
+        .outputMode("append")
+        .start()
+    )
+
+
+def start_late_sink(late: DataFrame, cfg: StreamConfig):
+    return (
+        late.writeStream.queryName("late_events")
+        .format("parquet")
+        .option("path", f"{cfg.lake_path}/late_events")
+        .option("checkpointLocation", cfg.checkpoint("late_events"))
+        .partitionBy("event_date")
+        .trigger(processingTime=cfg.lake_trigger)
+        .outputMode("append")
+        .start()
+    )
+
+
 def main() -> None:
     cfg = StreamConfig()
     spark = build_spark()
@@ -185,8 +251,12 @@ def main() -> None:
     parsed = parse(read_transactions(spark, cfg))
     transactions = enrich(parsed)
 
+    on_time, too_late = split_by_lateness(transactions, cfg)
+
     start_lake_sink(transactions, cfg)
-    start_feature_sinks(user_features(transactions), cfg)
+    start_feature_sinks(user_features(on_time, cfg), cfg)
+    start_window_stats(window_stats(on_time, cfg), cfg)
+    start_late_sink(too_late, cfg)
     print(f"[fraud-stream] consuming {cfg.transactions_topic} @ {cfg.bootstrap}", flush=True)
     spark.streams.awaitAnyTermination()
 

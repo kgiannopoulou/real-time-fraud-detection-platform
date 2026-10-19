@@ -28,6 +28,7 @@ if __package__ in (None, ""):  # allow `python producer/producer.py`
 
 from confluent_kafka import KafkaException, Producer
 
+from producer.chaos import ChaosConfig, ChaosInjector
 from producer.transaction_generator import (
     GeneratorConfig,
     TransactionGenerator,
@@ -94,8 +95,20 @@ def main(argv: list[str] | None = None) -> None:
     parser.add_argument(
         "--quiet", action="store_true", help="print a summary every 5 s instead of every event"
     )
+    parser.add_argument("--late-rate", type=float, default=0.0, help="share of events delayed 2-N s")
+    parser.add_argument("--max-late-seconds", type=float, default=60.0)
+    parser.add_argument(
+        "--very-late-rate", type=float, default=0.0, help="share delayed 3-5 min (beyond allowed lateness)"
+    )
     args = parser.parse_args(argv)
 
+    chaos = ChaosInjector(
+        ChaosConfig(
+            late_rate=args.late_rate,
+            max_late_seconds=args.max_late_seconds,
+            very_late_rate=args.very_late_rate,
+        )
+    )
     gen = TransactionGenerator(seed=args.seed, config=GeneratorConfig(n_users=users_for_rate(args.rate)))
     producer = TransactionProducer(args.bootstrap, args.topic)
     stop = False
@@ -112,15 +125,16 @@ def main(argv: list[str] | None = None) -> None:
     print(f"producing ~{args.rate:g} tx/s to {args.topic} @ {args.bootstrap} ({len(gen.users):,} cards)")
     try:
         for tx in gen.stream():
-            producer.send(strip_labels(tx))
-            sent += 1
-            if not args.quiet:
-                print(f"produced transaction {tx['transaction_id']}")
             now = time.monotonic()
+            for event in chaos.process(strip_labels(tx), now):
+                producer.send(event)
+                sent += 1
+                if not args.quiet:
+                    print(f"produced transaction {event['transaction_id']}")
             if args.quiet and now - last_report >= 5:
                 print(
                     f"sent={sent:,} delivered={producer.delivered:,} failed={producer.failed} "
-                    f"rate={sent / (now - started):.1f}/s"
+                    f"rate={sent / (now - started):.1f}/s chaos={chaos.stats}"
                 )
                 last_report = now
             if (
@@ -133,6 +147,9 @@ def main(argv: list[str] | None = None) -> None:
         print(f"kafka error: {exc}", file=sys.stderr)
         sys.exit(1)
     finally:
+        for event in chaos.drain():  # publish held-back events before exiting
+            producer.send(event)
+            sent += 1
         remaining = producer.flush()
         print(
             f"done: sent={sent:,} delivered={producer.delivered:,} failed={producer.failed} "

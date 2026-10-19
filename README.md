@@ -92,6 +92,14 @@ diversity, time since the last transaction) are computed with
 training set — see [docs/features.md](docs/features.md). They lift XGBoost
 from 0.50 to **0.79 PR-AUC**.
 
+**Event-time processing and watermarking are used to handle late-arriving
+transactions while limiting streaming state growth.** Features and 1-minute
+windows are computed on the transaction's own timestamp, a 2-minute watermark
+bounds state (per-user state expires through an event-time timeout), and
+events later than the allowed lateness go to a side output rather than being
+dropped silently — see [docs/event-time.md](docs/event-time.md). The producer
+can inject late and out-of-order events: `--late-rate 0.05 --very-late-rate 0.005`.
+
 See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis and
 [docs/model-comparison.md](docs/model-comparison.md) for the baseline models.
 
@@ -118,7 +126,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 4 — Kafka ingestion
 - [x] Phase 5 — Spark Structured Streaming
 - [x] Phase 6 — Behavioural streaming features
-- [ ] Phase 7 — Event time and watermarking
+- [x] Phase 7 — Event time and watermarking
 - [ ] Phase 8 — Real-time ML scoring
 - [ ] Phase 9 — Explainability
 - [ ] Phase 10 — PostgreSQL serving store

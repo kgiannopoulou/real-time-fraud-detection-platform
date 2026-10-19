@@ -24,7 +24,11 @@ from pyspark.sql.types import (
     TimestampType,
 )
 
-from streaming.features import BEHAVIOURAL_FEATURES, UserState
+from streaming.features import BEHAVIOURAL_FEATURES, HISTORY_SECONDS, UserState
+
+# A user's state is evicted after 24 h of event time without transactions
+# (on top of the watermark delay): their behavioural windows are empty by then.
+STATE_TTL_MS = int(HISTORY_SECONDS * 1000)
 
 PASSTHROUGH_FIELDS = [
     StructField("transaction_id", StringType()),
@@ -59,6 +63,9 @@ def compute_user_features(
     key: tuple, batches: Iterator[pd.DataFrame], state: GroupState
 ) -> Iterator[pd.DataFrame]:
     """Score-ready behavioural features for one user's events in this batch."""
+    if state.hasTimedOut:  # no events for this user within the TTL: drop the state
+        state.remove()
+        return
     events = pd.concat(list(batches), ignore_index=True)
     history = UserState.from_json(state.get[0] if state.exists else None)
 
@@ -78,4 +85,6 @@ def compute_user_features(
         rows.append({**rec._asdict(), "is_duplicate": False, **feats})
 
     state.update((history.to_json(),))
+    # Event-time timeout: fires once the watermark passes last activity + TTL.
+    state.setTimeoutTimestamp(int(history.max_ts * 1000) + STATE_TTL_MS)
     yield pd.DataFrame(rows, columns=OUTPUT_COLUMNS)
