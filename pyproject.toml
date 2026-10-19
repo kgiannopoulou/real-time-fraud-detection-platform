@@ -24,3 +24,7 @@ filterwarnings = [
 
 [tool.ruff.lint.isort]
 known-third-party = ["airflow"]
+
+[tool.coverage.run]
+source = ["producer", "ml", "streaming", "storage", "api", "dashboard"]
+omit = ["*/Dockerfile"]

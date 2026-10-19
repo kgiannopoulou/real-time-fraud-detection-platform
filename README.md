@@ -1,5 +1,7 @@
 # Real-Time Fraud Detection Platform
 
+[![CI](https://github.com/kgiannopoulou/real-time-fraud-detection-platform/actions/workflows/ci.yml/badge.svg)](https://github.com/kgiannopoulou/real-time-fraud-detection-platform/actions/workflows/ci.yml)
+
 Production-style streaming data platform for detecting fraudulent card
 transactions in real time: event ingestion with Kafka, stateful feature
 engineering with Spark Structured Streaming, ML scoring with a registered
@@ -53,6 +55,13 @@ Credentials are local-development defaults.
 
 Tests: `pytest` (unit + integration when the stack is up), `scripts/test_spark.sh`
 (Spark tests in the Spark image) — see [docs/testing.md](docs/testing.md).
+
+CI (GitHub Actions, `.github/workflows/ci.yml`) runs on every push and pull
+request: **lint** (ruff, generated dashboards up to date, compose valid) ->
+**unit tests** with coverage -> **integration tests** (Kafka + PostgreSQL via
+compose) and **Spark tests** (Java 17, PySpark 4.0) -> **Docker build** of all
+five images (layer cache) -> **end-to-end**: the full platform via
+`docker compose up` plus the smoke test.
 
 ```bash
 python -m venv .venv && . .venv/bin/activate      # Windows: .venv\Scripts\activate
@@ -274,7 +283,7 @@ See [docs/eda.md](docs/eda.md) for the dataset design and exploratory analysis a
 - [x] Phase 14 — Monitoring (Prometheus/Grafana)
 - [x] Phase 15 — Full Docker Compose stack
 - [x] Phase 16 — Tests
-- [ ] Phase 17 — CI/CD
+- [x] Phase 17 — CI/CD
 - [ ] Phase 18 — Cloud deployment
 - [ ] Phase 19 — Terraform
 - [ ] Phase 20 — Documentation
