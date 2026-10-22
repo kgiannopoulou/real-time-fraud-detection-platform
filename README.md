@@ -206,6 +206,7 @@ container, 2-second trigger; latency = Kafka ingest → prediction written):
 
 ## Documentation
 
+[Contributing](CONTRIBUTING.md) · [Changelog](CHANGELOG.md) ·
 [Dataset & EDA](docs/eda.md) ·
 [Model comparison](docs/model-comparison.md) ·
 [Behavioural features](docs/features.md) ·
@@ -218,6 +219,72 @@ container, 2-second trigger; latency = Kafka ingest → prediction written):
 [Benchmark](docs/benchmark.md) ·
 [Cloud deployment](docs/cloud-deployment.md) ·
 [Terraform](infrastructure/README.md)
+
+## Failure scenarios
+
+The happy path is the easy part. This is what the platform does when things go
+wrong — the first three are reproducible with the producer's fault-injection
+flags (see [Demo scenarios](#demo-scenarios)); the rest follow from how the
+job, sinks and services are built.
+
+| What goes wrong | What happens | Where it's handled |
+| --- | --- | --- |
+| **Event delivered twice** (producer retry) | Second copy is detected by `transaction_id` and routed to the dead-letter queue with reason `duplicate_transaction_id`; even if a replayed micro-batch writes again, PostgreSQL rows are `ON CONFLICT` upserts | `streaming/fraud_stream.py`, `storage/schema.sql` |
+| **Late / out-of-order events** | Scored with features computed at their *own* event time; events later than the allowed lateness go to the DLQ with reason `arrived_after_allowed_lateness` instead of silently corrupting state | `streaming/fraud_stream.py`, [event-time.md](docs/event-time.md) |
+| **Malformed or invalid payload** | Never crashes the job — rejected with one of 11 rule reasons into the `dead_letter_transactions` table/topic | [data-quality.md](docs/data-quality.md) |
+| **Spark job crashes mid-batch** | Container restarts (`restart: unless-stopped`) and resumes from the checkpoint's last committed offsets and state store; the replayed batch is harmless because every sink is idempotent | checkpoints in `CHECKPOINT_ROOT`, `foreachBatch` writers |
+| **Kafka unavailable** | The producer is idempotent (`acks=all`) and buffers/retries until its delivery timeout; the streaming query fails and is restarted, resuming from its checkpoint once the broker is back — no offsets are skipped | `producer/producer.py`, compose health checks |
+| **MLflow registry unreachable** | Scoring keeps the model it already has (or the bundled fallback model on a cold start) and logs the failed check; the API does the same | `streaming/scoring.py`, `api/main.py` |
+| **PostgreSQL down** | `GET /health` reports `degraded` with the reason instead of pretending to be fine; the stream's PostgreSQL sink fails and is retried on restart from the checkpoint | `api/main.py` |
+| **Bad model promoted** | Can't happen silently: a candidate only becomes `champion` if it beats the current one on the newest data by a margin, and rollback is moving the alias back | [retraining.md](docs/retraining.md) |
+| **Input distribution drifts** | PSI per feature against training baselines; the `FeatureDrift` Grafana alert fires (demo: `--amount-drift 2.0`) | [monitoring.md](docs/monitoring.md) |
+
+## Production considerations
+
+This is a portfolio system designed *toward* production, not one running in
+production. Before real card traffic it would need:
+
+* **Secrets** — local defaults (`admin/admin`, plain env vars) replaced by AWS
+  Secrets Manager (already wired in Terraform) and rotated credentials; no
+  secrets in compose files or images.
+* **Security** — Kafka with TLS + SASL and per-service ACLs, private subnets
+  only, API authentication (OAuth2 client credentials for the scoring
+  endpoint), and PCI-DSS scope reduction: tokenised card ids, no PAN anywhere
+  in the platform.
+* **High availability** — a 3-broker Kafka cluster (MSK, replication factor 3,
+  `min.insync.replicas=2`), Spark on a cluster manager with checkpoints on S3,
+  Multi-AZ RDS, and at least two API replicas behind the load balancer.
+* **Backups and recovery** — RDS automated backups + point-in-time recovery,
+  versioned S3 for the lake and checkpoints, and a tested runbook for
+  replaying Kafka from retained offsets after an outage.
+* **Monitoring and on-call** — the Grafana alert rules routed to a pager,
+  SLOs on end-to-end latency and consumer lag, and dashboards per team.
+* **Model governance** — label delay handled properly (chargebacks arrive
+  weeks later), shadow/canary scoring before promotion, an audit trail of
+  which model version scored every transaction (already stored), and
+  periodic fairness review.
+* **Privacy** — retention limits on the lake, pseudonymised user ids, and
+  GDPR deletion handled across PostgreSQL, the lake and Kafka retention.
+
+### What would change at 100× scale
+
+At ~45,000 tx/s the single Spark container is the first thing to go. Scale-out
+is by partition: more Kafka partitions keyed by `user_id`, a Spark cluster
+with one task per partition, and RocksDB state on local SSDs with S3
+checkpoints. Micro-batches would be tuned (or Flink considered) to bring
+p95 latency under a second for authorisation use; SHAP explanations would be
+computed only for flagged transactions; PostgreSQL would keep only recent
+hot data (partitioned by day) with history served from the lake through
+Athena/Trino; and synchronous scoring would read features from a low-latency
+online store (Redis/DynamoDB) instead of rebuilding them from PostgreSQL.
+
+### SQL
+
+The serving store is plain, reviewed SQL: [`storage/schema.sql`](storage/schema.sql)
+defines primary keys, `CHECK` constraints on enumerations, a `UNIQUE`
+constraint that makes alert creation idempotent, and composite / partial
+indexes (`(user_id, event_time DESC)`, open alerts only, fraud-only
+predictions) matched to the API's actual queries.
 
 ## Scope and honest limitations
 
@@ -261,3 +328,7 @@ container, 2-second trigger; latency = Kafka ingest → prediction written):
 Next ideas: label-delay-aware evaluation with a chargeback feed, a graph
 feature for shared devices across cards, Kafka Schema Registry with Avro,
 and a canary (shadow) scoring path for candidate models.
+
+## License
+
+[MIT](LICENSE) © 2026 kgiannopoulou
